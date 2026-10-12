@@ -136,4 +136,18 @@ describe('StorageService (P0 & P1-07 Regression Tests)', () => {
     const onDisk = JSON.parse(readFileSync(storage.getDataFilePath(), 'utf-8'))
     expect(onDisk.cards[0].title).toBe('Backup Task')
   })
+
+  it('Optimization: initializeCleanAfterCorruption resets state and enables saving', async () => {
+    writeFileSync(storage.getDataFilePath(), 'corrupted { json', 'utf-8')
+    storage.getInitialData()
+    expect(storage.isRecoveryRequired()).toBe(true)
+
+    const clean = await storage.initializeCleanAfterCorruption()
+    expect(clean.cards.length).toBe(0)
+    expect(storage.isRecoveryRequired()).toBe(false)
+
+    // Now save works normally
+    const saved = await storage.saveData(sampleData)
+    expect(saved).toBe(true)
+  })
 })

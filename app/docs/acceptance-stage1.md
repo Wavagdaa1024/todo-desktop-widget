@@ -38,3 +38,21 @@
 | S1-30 | 生成安装包后在真实 Windows 安装运行 | 软件能启动、保存、托盘驻留，卸载重装数据按约定保留 | electron-builder NSIS | **待 Windows 实机验收** | 已生成 NSIS 独立安装包 `dist/AI Task Board Setup 1.0.0.exe` |
 | S1-31 | 悬浮窗一键直达完整工作台 | 点击悬浮窗底部「查看全部 >」能顺畅激活并打开层 2 完整任务管理面板 | 跨窗口 IPC 联动 | **待 Windows 实机验收** | 悬浮窗底部按钮触发 `window:openMainBoard`，即时唤醒并聚焦 1180×760 主管理面板 |
 
+---
+
+## 阶段1细节专项优化记录 (Post-Review Optimizations)
+
+1. **悬浮小窗顶部手柄拖拽支持 (Widget Dragging)**:
+   - 在 `WidgetView.tsx` 顶部栏注入 `WebkitAppRegion: 'drag'`，Pin 与关闭按钮设置 `WebkitAppRegion: 'no-drag'`。用户可自由拖拽悬浮窗停靠至任意桌面位置。
+2. **多开单实例呼起行为修正 (Second Instance Behavior)**:
+   - 在 `main/index.ts` 中修正 `second-instance` 事件：重复双击快捷方式时始终恢复、置顶并聚焦现有主面板或悬浮窗，杜绝原 `toggleWidgetWindow()` 误将已打开窗口隐藏的问题。
+3. **卡片新建与复制排序一致性优化 (Card Ordering & Prepending)**:
+   - 在 `App.tsx` 中创建新卡片与复制卡片时统一赋予 `order: 0` 并对全量卡片重新编号，保证默认 MANUAL 排序下新卡片必然置于看板最顶端。
+4. **Windows 文件锁原子写入容灾 (Windows File-Lock Atomic Write Fallback)**:
+   - 在 `storage.ts` 的 `writeAtomicWithBackup` 中增加对 Windows 防病毒/索引服务偶发独占文件锁（`EBUSY` / `EPERM` / `EEXIST`）的捕获与 `copyFileSync` 安全覆盖降级，并在备份轮换时清理冲突目标。
+5. **回归测试套件扩充**:
+   - `tests/domain.test.ts` 增加卡片顺序移动与连续下标校验；
+   - `tests/storage-service.test.ts` 增加损坏后全新初始化安全落盘校验；
+   - 全套 23 项自动化测试全部通过，TypeScript 0 告警，Windows NSIS 安装包打包成功。
+
+

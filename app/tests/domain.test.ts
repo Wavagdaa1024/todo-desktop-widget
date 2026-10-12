@@ -329,5 +329,23 @@ describe('Domain: Card Status Reconciliation (P1-06)', () => {
     const reconciled = reconcileCardStatus(card, [])
     expect(reconciled.status).toBe('AI_RUNNING')
   })
+
+  it('Optimization: reorderCards preserves contiguous indices across order movements', () => {
+    const cards: Card[] = [
+      { id: 'c1', title: 'Task 1', status: 'TODO', owner: 'SELF', order: 0, collapsed: false, tasks: [], aiWork: { history: [] }, createdAt: '', updatedAt: '' },
+      { id: 'c2', title: 'Task 2', status: 'TODO', owner: 'SELF', order: 1, collapsed: false, tasks: [], aiWork: { history: [] }, createdAt: '', updatedAt: '' },
+      { id: 'c3', title: 'Task 3', status: 'TODO', owner: 'SELF', order: 2, collapsed: false, tasks: [], aiWork: { history: [] }, createdAt: '', updatedAt: '' }
+    ]
+
+    // Move c3 up
+    const reordered = reorderCards(cards, 'c3', 'up')
+    expect(reordered.map((c) => c.id)).toEqual(['c1', 'c3', 'c2'])
+    expect(reordered.map((c) => c.order)).toEqual([0, 1, 2])
+
+    // Move c1 down
+    const reordered2 = reorderCards(reordered, 'c1', 'down')
+    expect(reordered2.map((c) => c.id)).toEqual(['c3', 'c1', 'c2'])
+    expect(reordered2.map((c) => c.order)).toEqual([0, 1, 2])
+  })
 })
 

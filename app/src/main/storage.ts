@@ -210,8 +210,21 @@ export class StorageService {
       }
     }
 
-    // Atomic rename
-    renameSync(tempFile, this.dataFilePath)
+    // Atomic rename with Windows file-lock fallback (EBUSY, EPERM, EEXIST)
+    try {
+      renameSync(tempFile, this.dataFilePath)
+    } catch (err: any) {
+      if (err?.code === 'EPERM' || err?.code === 'EBUSY' || err?.code === 'EEXIST') {
+        copyFileSync(tempFile, this.dataFilePath)
+        try {
+          unlinkSync(tempFile)
+        } catch {
+          // ignore unlink error
+        }
+      } else {
+        throw err
+      }
+    }
   }
 
   private rotateBackups(): void {
@@ -233,6 +246,13 @@ export class StorageService {
         const src = join(this.userDataPath, `tasks_data.backup.${i}.json`)
         const dst = join(this.userDataPath, `tasks_data.backup.${i + 1}.json`)
         if (existsSync(src)) {
+          if (existsSync(dst)) {
+            try {
+              unlinkSync(dst)
+            } catch {
+              // ignore
+            }
+          }
           renameSync(src, dst)
         }
       }

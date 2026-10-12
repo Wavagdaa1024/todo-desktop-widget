@@ -91,7 +91,10 @@ export const WidgetView: React.FC = () => {
   return (
     <div className="w-full h-screen bg-[#111c2e]/92 backdrop-blur-2xl border border-white/10 rounded-2xl p-4 flex flex-col justify-between text-white shadow-2xl ring-1 ring-white/10 select-none overflow-hidden">
       {/* 1. Top Bar */}
-      <div className="flex items-center justify-between pb-3">
+      <div
+        className="flex items-center justify-between pb-3 cursor-move select-none"
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      >
         <div className="flex items-center gap-2">
           <div className="w-6 h-6 rounded-lg bg-blue-500/20 border border-blue-400/30 flex items-center justify-center text-blue-400 shadow-sm shadow-blue-500/30">
             <Sparkles className="w-3.5 h-3.5 text-blue-300" />
@@ -101,7 +104,10 @@ export const WidgetView: React.FC = () => {
           </span>
         </div>
 
-        <div className="flex items-center gap-1">
+        <div
+          className="flex items-center gap-1"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
           <button
             onClick={handleTogglePin}
             className={`p-1.5 rounded-lg transition-colors ${

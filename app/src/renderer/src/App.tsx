@@ -141,7 +141,7 @@ export const App: React.FC = () => {
       title: '新任务卡片 ' + (data.cards.length + 1),
       status: 'TODO',
       owner: 'SELF',
-      order: data.cards.length,
+      order: 0,
       collapsed: false,
       tasks: [],
       aiWork: {
@@ -151,11 +151,14 @@ export const App: React.FC = () => {
       updatedAt: new Date().toISOString()
     }
 
-    setData((prev) => ({
-      ...prev,
-      cards: [newCard, ...prev.cards],
-      lastModified: new Date().toISOString()
-    }))
+    setData((prev) => {
+      const nextCards = [newCard, ...prev.cards].map((c, idx) => ({ ...c, order: idx }))
+      return {
+        ...prev,
+        cards: nextCards,
+        lastModified: new Date().toISOString()
+      }
+    })
   }
 
   const handleUpdateCard = (cardId: string, updates: Partial<Card>) => {
@@ -173,11 +176,14 @@ export const App: React.FC = () => {
     if (!target) return
 
     const previousCards = [...data.cards]
-    setData((prev) => ({
-      ...prev,
-      cards: prev.cards.filter((c) => c.id !== cardId),
-      lastModified: new Date().toISOString()
-    }))
+    setData((prev) => {
+      const remaining = prev.cards.filter((c) => c.id !== cardId).map((c, idx) => ({ ...c, order: idx }))
+      return {
+        ...prev,
+        cards: remaining,
+        lastModified: new Date().toISOString()
+      }
+    })
 
     // Provide undo toast
     setUndoToast({
@@ -209,7 +215,7 @@ export const App: React.FC = () => {
       id: 'card_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
       title: `${card.title} (副本)`,
       status: 'TODO',
-      order: data.cards.length,
+      order: 0,
       tasks: cloneTaskTree(card.tasks),
       aiWork: {
         currentTaskDescription: card.aiWork.currentTaskDescription,
@@ -222,11 +228,14 @@ export const App: React.FC = () => {
       updatedAt: new Date().toISOString()
     }
 
-    setData((prev) => ({
-      ...prev,
-      cards: [duplicated, ...prev.cards],
-      lastModified: new Date().toISOString()
-    }))
+    setData((prev) => {
+      const nextCards = [duplicated, ...prev.cards].map((c, idx) => ({ ...c, order: idx }))
+      return {
+        ...prev,
+        cards: nextCards,
+        lastModified: new Date().toISOString()
+      }
+    })
   }
 
   // Card Reordering based on stable ID (P1-01)
@@ -360,11 +369,15 @@ export const App: React.FC = () => {
       updatedAt: new Date().toISOString()
     }
 
-    setData((prev) => ({
-      ...prev,
-      cards: [sampleCard, ...prev.cards],
-      lastModified: new Date().toISOString()
-    }))
+    setData((prev) => {
+      const remaining = prev.cards.filter((c) => c.id !== sampleCard.id)
+      const nextCards = [sampleCard, ...remaining].map((c, idx) => ({ ...c, order: idx }))
+      return {
+        ...prev,
+        cards: nextCards,
+        lastModified: new Date().toISOString()
+      }
+    })
   }
 
   // Filter & Search & Sort pipeline

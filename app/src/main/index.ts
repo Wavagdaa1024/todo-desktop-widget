@@ -19,7 +19,20 @@ if (!gotTheLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    toggleWidgetWindow()
+    // Reveal and focus existing window; never unexpectedly hide on second launch
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      if (!mainWindow.isVisible()) mainWindow.show()
+      mainWindow.focus()
+    } else {
+      if (!widgetWindow || widgetWindow.isDestroyed()) {
+        createWidgetWindow()
+      }
+      if (widgetWindow && !widgetWindow.isDestroyed()) {
+        if (!widgetWindow.isVisible()) widgetWindow.show()
+        widgetWindow.focus()
+      }
+    }
   })
 }
 
