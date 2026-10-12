@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react'
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { Card, AppData, DEFAULT_SETTINGS } from './domain/types'
 import { Header, FilterStatus, SortOption } from './components/Header'
 import { TaskCard } from './components/TaskCard'
@@ -24,12 +24,16 @@ export const App: React.FC = () => {
   const [isRecoveryMode, setIsRecoveryMode] = useState(false)
   const [undoToast, setUndoToast] = useState<{ message: string; action: () => void } | null>(null)
   const isRemoteUpdate = useRef(false)
+  const pendingDataRef = useRef<AppData | null>(null)
+  const saveTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const currentRevisionRef = useRef<number>(0)
 
   // Load initial data on mount
   useEffect(() => {
     if (window.electronAPI) {
       window.electronAPI.storage.getInitialData().then((res) => {
         setData(res.data)
+        currentRevisionRef.current = res.data.revision || 0
         if (res.recoveryRequired) {
           setIsRecoveryMode(true)
           setIsLoaded(false)
@@ -45,6 +49,50 @@ export const App: React.FC = () => {
     }
   }, [])
 
+  // P0-01: Guaranteed flush for pending debounced save
+  const flushPendingSave = useCallback(async (): Promise<boolean> => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+    }
+    if (!pendingDataRef.current || isRecoveryMode) {
+      return true
+    }
+    const toSave = pendingDataRef.current
+    pendingDataRef.current = null
+    try {
+      if (window.electronAPI) {
+        setSaveStatus('saving')
+        const success = await window.electronAPI.storage.saveData(toSave)
+        setSaveStatus(success ? 'saved' : 'error')
+        return success
+      }
+      return true
+    } catch (err) {
+      console.error('Flush save error:', err)
+      setSaveStatus('error')
+      return false
+    }
+  }, [isRecoveryMode])
+
+  // P0-01: Main process asks renderer to flush pending save before quitting
+  useEffect(() => {
+    if (!window.electronAPI?.system?.onRequestFlush) return
+    const unsubscribe = window.electronAPI.system.onRequestFlush(async () => {
+      return await flushPendingSave()
+    })
+    return () => unsubscribe()
+  }, [flushPendingSave])
+
+  // P0-01: Window beforeunload browser event hook
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      flushPendingSave()
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [flushPendingSave])
+
   // Auto-save debounced whenever cards or settings change (Blocked in recovery mode: P0-02)
   useEffect(() => {
     if (!isLoaded || isRecoveryMode) return
@@ -53,11 +101,20 @@ export const App: React.FC = () => {
       return
     }
 
+    pendingDataRef.current = data
     setSaveStatus('saving')
-    const timer = setTimeout(async () => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current)
+    }
+
+    saveTimerRef.current = setTimeout(async () => {
+      saveTimerRef.current = null
+      if (!pendingDataRef.current) return
+      const toSave = pendingDataRef.current
+      pendingDataRef.current = null
       try {
         if (window.electronAPI) {
-          const success = await window.electronAPI.storage.saveData(data)
+          const success = await window.electronAPI.storage.saveData(toSave)
           setSaveStatus(success ? 'saved' : 'error')
         } else {
           setSaveStatus('saved')
@@ -68,7 +125,12 @@ export const App: React.FC = () => {
       }
     }, 400)
 
-    return () => clearTimeout(timer)
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current)
+        saveTimerRef.current = null
+      }
+    }
   }, [data, isLoaded, isRecoveryMode])
 
 
@@ -115,13 +177,24 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (!window.electronAPI?.storage?.onDataUpdated) return
     const unsubscribe = window.electronAPI.storage.onDataUpdated((remoteData) => {
+      // P0-02: Ignore stale broadcasts older or equal to current local revision
+      if (
+        remoteData.revision !== undefined &&
+        currentRevisionRef.current !== undefined &&
+        remoteData.revision <= currentRevisionRef.current
+      ) {
+        return
+      }
+      if (remoteData.revision !== undefined) {
+        currentRevisionRef.current = remoteData.revision
+      }
       isRemoteUpdate.current = true
       setData(remoteData)
     })
     return () => unsubscribe()
   }, [])
 
-  // Listen for tray quick actions (P1-02)
+  // Listen for tray quick actions (P1-02 & P1-03)
   useEffect(() => {
     if (!window.electronAPI?.system?.onQuickAction) return
     const unsubscribe = window.electronAPI.system.onQuickAction((action) => {
@@ -136,64 +209,84 @@ export const App: React.FC = () => {
 
   // Card Operations
   const handleAddNewCard = () => {
-    const newCard: Card = {
-      id: 'card_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-      title: '新任务卡片 ' + (data.cards.length + 1),
-      status: 'TODO',
-      owner: 'SELF',
-      order: 0,
-      collapsed: false,
-      tasks: [],
-      aiWork: {
-        history: []
-      },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    }
-
     setData((prev) => {
+      const nextRevision = (prev.revision || 0) + 1
+      currentRevisionRef.current = nextRevision
+      const newCard: Card = {
+        id: 'card_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+        // P1-03: Dynamically compute title from current prev.cards state
+        title: '新任务卡片 ' + (prev.cards.length + 1),
+        status: 'TODO',
+        owner: 'SELF',
+        order: 0,
+        collapsed: false,
+        tasks: [],
+        aiWork: {
+          history: []
+        },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
       const nextCards = [newCard, ...prev.cards].map((c, idx) => ({ ...c, order: idx }))
       return {
         ...prev,
         cards: nextCards,
+        revision: nextRevision,
         lastModified: new Date().toISOString()
       }
     })
   }
 
   const handleUpdateCard = (cardId: string, updates: Partial<Card>) => {
-    setData((prev) => ({
-      ...prev,
-      cards: prev.cards.map((c) =>
-        c.id === cardId ? { ...c, ...updates, updatedAt: new Date().toISOString() } : c
-      ),
-      lastModified: new Date().toISOString()
-    }))
+    setData((prev) => {
+      const nextRevision = (prev.revision || 0) + 1
+      currentRevisionRef.current = nextRevision
+      return {
+        ...prev,
+        cards: prev.cards.map((c) =>
+          c.id === cardId ? { ...c, ...updates, updatedAt: new Date().toISOString() } : c
+        ),
+        revision: nextRevision,
+        lastModified: new Date().toISOString()
+      }
+    })
   }
 
   const handleDeleteCard = (cardId: string) => {
     const target = data.cards.find((c) => c.id === cardId)
-    if (!target) return
+    const targetIndex = data.cards.findIndex((c) => c.id === cardId)
+    if (!target || targetIndex === -1) return
 
-    const previousCards = [...data.cards]
     setData((prev) => {
+      const nextRevision = (prev.revision || 0) + 1
+      currentRevisionRef.current = nextRevision
       const remaining = prev.cards.filter((c) => c.id !== cardId).map((c, idx) => ({ ...c, order: idx }))
       return {
         ...prev,
         cards: remaining,
+        revision: nextRevision,
         lastModified: new Date().toISOString()
       }
     })
 
-    // Provide undo toast
+    // Provide undo toast with non-destructive inverse restore (P1-02)
     setUndoToast({
       message: `已删除卡片「${target.title}」`,
       action: () => {
-        setData((prev) => ({
-          ...prev,
-          cards: previousCards,
-          lastModified: new Date().toISOString()
-        }))
+        setData((prev) => {
+          if (prev.cards.some((c) => c.id === target.id)) return prev
+          const nextRevision = (prev.revision || 0) + 1
+          currentRevisionRef.current = nextRevision
+          const nextCards = [...prev.cards]
+          const insertIdx = Math.min(Math.max(0, targetIndex), nextCards.length)
+          nextCards.splice(insertIdx, 0, target)
+          return {
+            ...prev,
+            cards: nextCards.map((c, idx) => ({ ...c, order: idx })),
+            revision: nextRevision,
+            lastModified: new Date().toISOString()
+          }
+        })
       }
     })
     setTimeout(() => setUndoToast(null), 6000)
@@ -229,10 +322,13 @@ export const App: React.FC = () => {
     }
 
     setData((prev) => {
+      const nextRevision = (prev.revision || 0) + 1
+      currentRevisionRef.current = nextRevision
       const nextCards = [duplicated, ...prev.cards].map((c, idx) => ({ ...c, order: idx }))
       return {
         ...prev,
         cards: nextCards,
+        revision: nextRevision,
         lastModified: new Date().toISOString()
       }
     })
@@ -240,17 +336,45 @@ export const App: React.FC = () => {
 
   // Card Reordering based on stable ID (P1-01)
   const handleMoveCardOrder = (cardId: string, direction: 'up' | 'down') => {
-    setData((prev) => ({
-      ...prev,
-      cards: reorderCards(prev.cards, cardId, direction),
-      lastModified: new Date().toISOString()
-    }))
+    setData((prev) => {
+      const nextRevision = (prev.revision || 0) + 1
+      currentRevisionRef.current = nextRevision
+      return {
+        ...prev,
+        cards: reorderCards(prev.cards, cardId, direction),
+        revision: nextRevision,
+        lastModified: new Date().toISOString()
+      }
+    })
+  }
+
+  // Card Drag and Drop Reordering (P1-01)
+  const handleDropCardOrder = (sourceCardId: string, targetCardId: string) => {
+    if (sourceCardId === targetCardId) return
+    setData((prev) => {
+      const sorted = [...prev.cards].sort((a, b) => a.order - b.order)
+      const srcIdx = sorted.findIndex((c) => c.id === sourceCardId)
+      const tgtIdx = sorted.findIndex((c) => c.id === targetCardId)
+      if (srcIdx === -1 || tgtIdx === -1) return prev
+
+      const [moved] = sorted.splice(srcIdx, 1)
+      sorted.splice(tgtIdx, 0, moved)
+      const nextRevision = (prev.revision || 0) + 1
+      currentRevisionRef.current = nextRevision
+      return {
+        ...prev,
+        cards: sorted.map((c, idx) => ({ ...c, order: idx })),
+        revision: nextRevision,
+        lastModified: new Date().toISOString()
+      }
+    })
   }
 
   const handleInitializeClean = async () => {
     if (confirm('确认放弃损坏的原文件并全新初始化？此操作将清空损坏卡片数据并恢复安全状态。')) {
       if (window.electronAPI?.storage?.initializeClean) {
         const clean = await window.electronAPI.storage.initializeClean()
+        currentRevisionRef.current = clean.revision || 0
         setData(clean)
         setIsRecoveryMode(false)
         setIsLoaded(true)
@@ -370,11 +494,14 @@ export const App: React.FC = () => {
     }
 
     setData((prev) => {
+      const nextRevision = (prev.revision || 0) + 1
+      currentRevisionRef.current = nextRevision
       const remaining = prev.cards.filter((c) => c.id !== sampleCard.id)
       const nextCards = [sampleCard, ...remaining].map((c, idx) => ({ ...c, order: idx }))
       return {
         ...prev,
         cards: nextCards,
+        revision: nextRevision,
         lastModified: new Date().toISOString()
       }
     })
@@ -500,10 +627,12 @@ export const App: React.FC = () => {
               <TaskCard
                 key={card.id}
                 card={card}
+                currentSort={currentSort}
                 onUpdateCard={(updates) => handleUpdateCard(card.id, updates)}
                 onDeleteCard={handleDeleteCard}
                 onDuplicateCard={handleDuplicateCard}
                 onMoveOrder={(dir) => handleMoveCardOrder(card.id, dir)}
+                onDropOrder={handleDropCardOrder}
                 isFirst={index === 0}
                 isLast={index === filteredAndSortedCards.length - 1}
                 onNotifyUndo={(msg, action) => {

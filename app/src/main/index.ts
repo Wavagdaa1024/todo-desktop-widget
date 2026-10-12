@@ -91,7 +91,7 @@ function createMainWindow(): void {
     return { action: 'deny' }
   })
 
-  // Close to tray logic or exit (P1-05)
+  // Close to tray logic or exit (P1-05 & P0-01)
   mainWindow.on('close', async (event) => {
     if (isQuitting) return
 
@@ -106,9 +106,7 @@ function createMainWindow(): void {
     } else {
       // User chose to quit app on window close
       event.preventDefault()
-      isQuitting = true
-      await storageService.flush()
-      app.quit()
+      await prepareAndQuit()
     }
   })
 
@@ -231,9 +229,7 @@ function createTray(): void {
     {
       label: '真正退出',
       click: async (): Promise<void> => {
-        isQuitting = true
-        await storageService.flush()
-        app.quit()
+        await prepareAndQuit()
       }
     }
   ])
@@ -246,6 +242,41 @@ function createTray(): void {
   })
 }
 
+async function prepareAndQuit(): Promise<void> {
+  if (isQuitting) return
+  isQuitting = true
+
+  // P0-01: Request renderer to flush any pending debounced save and await confirmation
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    try {
+      const correlationId = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+      const ackPromise = new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => {
+          ipcMain.removeAllListeners(`system:flush-response:${correlationId}`)
+          resolve(false)
+        }, 1500)
+        ipcMain.once(`system:flush-response:${correlationId}`, (_, success: boolean) => {
+          clearTimeout(timer)
+          resolve(success)
+        })
+      })
+      mainWindow.webContents.send('system:request-flush', correlationId)
+      await ackPromise
+    } catch (err) {
+      console.warn('Failed to request renderer flush:', err)
+    }
+  }
+
+  // P0-03: Ensure all in-flight and queued writes settle to disk
+  try {
+    await storageService.flush()
+  } catch (err) {
+    console.error('Error during storage flush on exit:', err)
+  }
+
+  app.quit()
+}
+
 function showNotification(title: string, body: string): void {
   if (Notification.isSupported()) {
     new Notification({
@@ -256,24 +287,28 @@ function showNotification(title: string, body: string): void {
   }
 }
 
-function broadcastDataUpdated(data: AppData): void {
+// P0-02: Broadcast to other windows, filtering out sender window to prevent echo overwriting
+function broadcastDataUpdated(data: AppData, senderWebContentsId?: number): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('data-updated', data)
+    if (!senderWebContentsId || mainWindow.webContents.id !== senderWebContentsId) {
+      mainWindow.webContents.send('data-updated', data)
+    }
   }
   if (widgetWindow && !widgetWindow.isDestroyed()) {
-    widgetWindow.webContents.send('data-updated', data)
+    if (!senderWebContentsId || widgetWindow.webContents.id !== senderWebContentsId) {
+      widgetWindow.webContents.send('data-updated', data)
+    }
   }
 }
 
-// AI Timeout Monitor
-const notifiedRounds = new Set<string>()
-
+// AI Timeout Monitor (P1-04: Persisted notification rounds)
 function checkAiTimeouts(): void {
   if (!currentSettings || currentSettings.aiWaitReminderThreshold <= 0) return
 
   const initial = storageService.getInitialData()
   const thresholdMs = currentSettings.aiWaitReminderThreshold * 60 * 1000
   const now = Date.now()
+  const notifiedRounds = storageService.getNotifiedRounds()
 
   for (const card of initial.data.cards) {
     if (card.status === 'AI_RUNNING' && card.aiWork.activeStartTime) {
@@ -282,7 +317,7 @@ function checkAiTimeouts(): void {
       const roundKey = `${card.id}_${card.aiWork.activeStartTime}`
 
       if (elapsedMs >= thresholdMs && !notifiedRounds.has(roundKey)) {
-        notifiedRounds.add(roundKey)
+        storageService.markRoundNotified(roundKey)
         const minutes = Math.floor(elapsedMs / 60000)
         showNotification(
           `任务等待提醒：${card.title}`,
@@ -343,11 +378,12 @@ ipcMain.handle('storage:getInitialData', async () => {
   return storageService.getInitialData()
 })
 
-ipcMain.handle('storage:saveData', async (_, data: AppData) => {
+ipcMain.handle('storage:saveData', async (event, data: AppData) => {
   currentSettings = data.settings
   const success = await storageService.saveData(data)
   if (success) {
-    broadcastDataUpdated(data)
+    // P0-02: Broadcast to other windows, but never echo back to the sender window!
+    broadcastDataUpdated(data, event.sender.id)
   }
   return success
 })
@@ -459,4 +495,13 @@ ipcMain.on('system:openUserDataFolder', () => {
 
 ipcMain.handle('system:copyText', async (_, text: string) => {
   clipboard.writeText(text)
+})
+
+let hasFlushedBeforeQuit = false
+app.on('before-quit', async (event) => {
+  if (!hasFlushedBeforeQuit && !isQuitting) {
+    event.preventDefault()
+    hasFlushedBeforeQuit = true
+    await prepareAndQuit()
+  }
 })

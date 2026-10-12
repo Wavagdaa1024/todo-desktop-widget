@@ -211,16 +211,27 @@ export function updateTaskItem(
   return nextTasks
 }
 
+export interface DeleteTaskResult {
+  updatedTasks: TaskItem[]
+  deletedTask: TaskItem | null
+  parentId: string | null
+  originalIndex: number
+}
+
 export function deleteTaskItem(
   tasks: TaskItem[],
   targetId: string
-): { updatedTasks: TaskItem[]; deletedTask: TaskItem | null } {
+): DeleteTaskResult {
   const nextTasks = cloneTasks(tasks)
   let deleted: TaskItem | null = null
+  let parentId: string | null = null
+  let originalIndex = -1
 
   function recursiveDelete(list: TaskItem[], parent: TaskItem | null): boolean {
     const index = list.findIndex((t) => t.id === targetId)
     if (index !== -1) {
+      originalIndex = index
+      parentId = parent ? parent.id : null
       deleted = list.splice(index, 1)[0]
       // Re-order siblings
       list.forEach((t, i) => {
@@ -228,7 +239,6 @@ export function deleteTaskItem(
       })
       if (parent && isLeaf(parent)) {
         // Parent became a leaf again!
-        // Derivation strategy: if deleted task was completed, we keep completed true; otherwise false
         parent.completed = deleted.completed
         parent.updatedAt = new Date().toISOString()
       }
@@ -245,7 +255,49 @@ export function deleteTaskItem(
   }
 
   recursiveDelete(nextTasks, null)
-  return { updatedTasks: nextTasks, deletedTask: deleted }
+  return { updatedTasks: nextTasks, deletedTask: deleted, parentId, originalIndex }
+}
+
+export function restoreTaskItem(
+  tasks: TaskItem[],
+  itemToRestore: TaskItem,
+  parentId: string | null,
+  index: number
+): TaskItem[] {
+  const nextTasks = cloneTasks(tasks)
+
+  function recursiveRestore(list: TaskItem[], currentParentId: string | null): boolean {
+    if (currentParentId === parentId) {
+      if (list.some((t) => t.id === itemToRestore.id)) return true
+      const targetIdx = Math.min(Math.max(0, index), list.length)
+      list.splice(targetIdx, 0, cloneTasks([itemToRestore])[0])
+      list.forEach((t, i) => {
+        t.order = i
+      })
+      return true
+    }
+    for (const item of list) {
+      if (item.id === parentId) {
+        if (!item.children) item.children = []
+        if (item.children.some((t) => t.id === itemToRestore.id)) return true
+        const targetIdx = Math.min(Math.max(0, index), item.children.length)
+        item.children.splice(targetIdx, 0, cloneTasks([itemToRestore])[0])
+        item.children.forEach((t, i) => {
+          t.order = i
+        })
+        return true
+      }
+      if (item.children && item.children.length > 0) {
+        if (recursiveRestore(item.children, item.id)) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+
+  recursiveRestore(nextTasks, null)
+  return nextTasks
 }
 
 export function reorderSiblingTasks(

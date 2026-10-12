@@ -4,6 +4,7 @@ import {
   calculateProgress,
   addTaskToParent,
   deleteTaskItem,
+  restoreTaskItem,
   updateTaskItem,
   toggleTask,
   reconcileCardStatus
@@ -28,10 +29,12 @@ import {
 
 interface TaskCardProps {
   card: Card
+  currentSort?: string
   onUpdateCard: (updates: Partial<Card>) => void
   onDeleteCard: (cardId: string) => void
   onDuplicateCard: (card: Card) => void
   onMoveOrder: (direction: 'up' | 'down') => void
+  onDropOrder?: (sourceId: string, targetId: string) => void
   isFirst: boolean
   isLast: boolean
   onNotifyUndo?: (message: string, undoAction: () => void) => void
@@ -39,10 +42,12 @@ interface TaskCardProps {
 
 export const TaskCard: React.FC<TaskCardProps> = ({
   card,
+  currentSort,
   onUpdateCard,
   onDeleteCard,
   onDuplicateCard,
   onMoveOrder,
+  onDropOrder,
   isFirst,
   isLast,
   onNotifyUndo
@@ -58,6 +63,8 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   const [cardDueDateDraft, setCardDueDateDraft] = useState(card.dueDate || '')
   const [cardCategoryDraft, setCardCategoryDraft] = useState(card.category || '')
   const [cardDescDraft, setCardDescDraft] = useState(card.description || '')
+  const [isDragOver, setIsDragOver] = useState(false)
+  const isManualSort = !currentSort || currentSort === 'MANUAL'
 
   const titleInputRef = useRef<HTMLInputElement>(null)
   const progress = calculateProgress(card.tasks)
@@ -161,15 +168,17 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   }
 
   const handleDeleteTask = (taskId: string) => {
-    const previousTasks = [...card.tasks]
-    const previousStatus = card.status
-    const { updatedTasks } = deleteTaskItem(card.tasks, taskId)
+    const { updatedTasks, deletedTask, parentId, originalIndex } = deleteTaskItem(card.tasks, taskId)
+    if (!deletedTask) return
     const reconciled = reconcileCardStatus(card, updatedTasks)
     onUpdateCard({ tasks: reconciled.tasks, status: reconciled.status })
 
     if (onNotifyUndo) {
-      onNotifyUndo('已删除任务', () => {
-        onUpdateCard({ tasks: previousTasks, status: previousStatus })
+      onNotifyUndo(`已删除任务「${deletedTask.title}」`, () => {
+        // P1-02: Non-destructive restoration of only this task without rolling back other tasks
+        onUpdateCard({
+          tasks: restoreTaskItem(card.tasks, deletedTask, parentId, originalIndex)
+        })
       })
     }
   }
@@ -203,7 +212,26 @@ export const TaskCard: React.FC<TaskCardProps> = ({
 
   return (
     <div
+      onDragOver={(e) => {
+        if (isManualSort) {
+          e.preventDefault()
+          e.dataTransfer.dropEffect = 'move'
+          setIsDragOver(true)
+        }
+      }}
+      onDragLeave={() => setIsDragOver(false)}
+      onDrop={(e) => {
+        if (!isManualSort) return
+        e.preventDefault()
+        setIsDragOver(false)
+        const sourceId = e.dataTransfer.getData('text/plain')
+        if (sourceId && sourceId !== card.id && onDropOrder) {
+          onDropOrder(sourceId, card.id)
+        }
+      }}
       className={`group relative flex flex-col bg-white dark:bg-slate-900 border rounded-xl shadow-sm transition-all hover:shadow-md ${
+        isDragOver ? 'ring-2 ring-blue-500 shadow-lg scale-[1.01]' : ''
+      } ${
         isOverdue
           ? 'border-rose-300 dark:border-rose-800/80 ring-1 ring-rose-400/20'
           : card.status === 'WAITING_ACCEPT'
@@ -220,23 +248,38 @@ export const TaskCard: React.FC<TaskCardProps> = ({
         <div className="flex items-start justify-between gap-2">
           {/* Left: Reorder handle & Expand button & Title */}
           <div className="flex items-start gap-1.5 flex-1 min-w-0">
-            {/* Reorder Buttons & Grip Handle (P2-05) */}
-            <div className="flex items-center -mt-0.5 opacity-40 group-hover:opacity-100 transition-opacity">
+            {/* Reorder Buttons & Grip Handle (P1-01) */}
+            <div
+              draggable={isManualSort}
+              onDragStart={(e) => {
+                if (!isManualSort) return
+                e.dataTransfer.setData('text/plain', card.id)
+                e.dataTransfer.effectAllowed = 'move'
+              }}
+              className={`flex items-center -mt-0.5 opacity-40 group-hover:opacity-100 transition-opacity ${
+                isManualSort ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'
+              }`}
+              title={
+                isManualSort
+                  ? '按住拖动卡片重排，或点击上下箭头移动'
+                  : '当前为自动排序模式（按更新/截止日期）。切换为“手动排序”后可自由拖动'
+              }
+            >
               <GripVertical className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 mr-0.5 self-center" />
               <div className="flex flex-col">
                 <button
-                  disabled={isFirst}
+                  disabled={isFirst || !isManualSort}
                   onClick={() => onMoveOrder('up')}
                   className="p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 disabled:opacity-20"
-                  title="向上移动"
+                  title={isManualSort ? '向上移动' : '仅在手动排序模式下可移动'}
                 >
                   <ArrowUp className="w-3 h-3" />
                 </button>
                 <button
-                  disabled={isLast}
+                  disabled={isLast || !isManualSort}
                   onClick={() => onMoveOrder('down')}
                   className="p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 disabled:opacity-20"
-                  title="向下移动"
+                  title={isManualSort ? '向下移动' : '仅在手动排序模式下可移动'}
                 >
                   <ArrowDown className="w-3 h-3" />
                 </button>

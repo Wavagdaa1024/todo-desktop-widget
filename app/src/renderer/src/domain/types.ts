@@ -63,6 +63,7 @@ export interface AppData {
   cards: Card[]
   settings: AppSettings
   lastModified: string
+  revision?: number
 }
 
 export interface StorageInitialResult {
@@ -134,7 +135,8 @@ export const AppDataSchema = z.object({
   schemaVersion: z.literal(1),
   cards: z.array(CardSchema),
   settings: AppSettingsSchema,
-  lastModified: z.string()
+  lastModified: z.string(),
+  revision: z.number().optional()
 })
 
 export const DEFAULT_SETTINGS: AppSettings = {

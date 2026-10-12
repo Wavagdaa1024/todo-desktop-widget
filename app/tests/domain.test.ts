@@ -5,6 +5,8 @@ import {
   toggleTask,
   addTaskToParent,
   deleteTaskItem,
+  restoreTaskItem,
+  updateTaskItem,
   getAllLeaves,
   reorderCards,
   reconcileCardStatus
@@ -346,6 +348,30 @@ describe('Domain: Card Status Reconciliation (P1-06)', () => {
     const reordered2 = reorderCards(reordered, 'c1', 'down')
     expect(reordered2.map((c) => c.id)).toEqual(['c3', 'c1', 'c2'])
     expect(reordered2.map((c) => c.order)).toEqual([0, 1, 2])
+  })
+
+  it('P1-02: restoreTaskItem restores deleted subtask without rolling back subsequent edits to siblings', () => {
+    const tasks: TaskItem[] = [
+      { id: 't1', title: 'Task 1', completed: false, order: 0, children: [], createdAt: '', updatedAt: '' },
+      { id: 't2', title: 'Task 2', completed: false, order: 1, children: [], createdAt: '', updatedAt: '' },
+      { id: 't3', title: 'Task 3', completed: false, order: 2, children: [], createdAt: '', updatedAt: '' }
+    ]
+
+    // 1. Delete task t2
+    const { updatedTasks, deletedTask, parentId, originalIndex } = deleteTaskItem(tasks, 't2')
+    expect(deletedTask?.id).toBe('t2')
+    expect(updatedTasks.map((t) => t.id)).toEqual(['t1', 't3'])
+
+    // 2. Modify sibling t1 title while t2 is in deleted state
+    const modifiedTasks = updateTaskItem(updatedTasks, 't1', { title: 'Task 1 Renamed' })
+    expect(modifiedTasks[0].title).toBe('Task 1 Renamed')
+
+    // 3. User clicks Undo: restore deletedTask into modifiedTasks
+    const restoredTasks = restoreTaskItem(modifiedTasks, deletedTask!, parentId, originalIndex)
+    expect(restoredTasks.map((t) => t.id)).toEqual(['t1', 't2', 't3'])
+    // Sibling edit must NOT be lost!
+    expect(restoredTasks[0].title).toBe('Task 1 Renamed')
+    expect(restoredTasks[1].title).toBe('Task 2')
   })
 })
 

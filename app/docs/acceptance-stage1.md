@@ -55,4 +55,37 @@
    - `tests/storage-service.test.ts` 增加损坏后全新初始化安全落盘校验；
    - 全套 23 项自动化测试全部通过，TypeScript 0 告警，Windows NSIS 安装包打包成功。
 
+---
+
+## 第二轮代码审查（Round 2）修复与强化记录
+
+依据 `AI_Task_Board_Review_Round2_772721f.md` 审核意见，已针对 P0-01～P0-04 与 P1-01～P1-04 全量落实增量修复方案：
+
+1. **P0-01 退出时渲染进程最后编辑防丢协议 (Guaranteed Exit Flush Protocol)**:
+   - 渲染进程通过 `pendingDataRef` 追踪未落盘修改；
+   - 主进程在「真正退出」、窗口关闭与 `before-quit` 时，先发送 `system:request-flush` 唤醒渲染进程强制提交流水，等待渲染确认 ACK 后再调用 `storageService.flush()` 落盘并退出，杜绝 400ms 防抖区间内退出丢数据。
+2. **P0-02 IPC 数据广播防回显覆盖与单调递增版本号 (Anti-Echo & Monotonic Revision)**:
+   - 主进程 `storage:saveData` 广播过滤发送方 `event.sender.id`，保存成功后绝不将自身数据广播回显给保存发起窗口；
+   - `AppData` 引入单调递增 `revision` 字段，渲染进程对晚到的旧版本广播直接丢弃，彻底消除并发编辑覆盖风险。
+3. **P0-03 StorageService 写入队列真确认语义 (Serialized Promise Write Queue)**:
+   - 重构 `StorageService.saveData` 为严格 Promise 链式写入队列，多并发保存合并时确保每个请求的 Promise 仅在真实磁盘落盘完毕后才 resolve；
+   - `flush()` 显式等待当前 in-flight 与队列全部执行完毕；`importData`、`restoreFromBackup`、`initializeClean` 全部经由同一串行锁。
+4. **P0-04 Windows 重命名与原子替换回滚保护 (Windows Retry & Rollback File Replacement)**:
+   - 替换文件时针对 Windows 杀软/索引服务瞬态锁提供 5 次指数退避重试；
+   - 重试失败后进入保护降级分支：必须先创建带时间戳的 `.rollback` 快照后方可执行覆盖复制，复制若抛错立即由回滚副本无损还原原文件，绝不破坏既有数据。
+5. **P1-01 卡片原生 HTML5 拖拽重排 (Native HTML5 Card Drag and Drop)**:
+   - `TaskCard.tsx` 增加 `draggable={isManualSort}`、`onDragStart`、`onDragOver` 与 `onDrop` 事件，拖拽悬停触发高亮指示环；在手动排序下支持拖动卡片重排，自动排序模式提供友好 Tooltip 提示。
+6. **P1-02 局部非破坏性撤销恢复 (Non-Destructive Target Undo)**:
+   - 卡片删除撤销改为以被删卡片为单位的位置切片还原（Splicing），不影响其他卡片的新编辑；
+   - 子任务删除撤销通过 `restoreTaskItem` 仅将目标任务插回父节点原下标，完全保留其他兄弟任务的任何修改。
+7. **P1-03 托盘快捷创建卡片标题动态计算 (Dynamic Card Naming)**:
+   - `handleAddNewCard` 移入 `setData(prev => ...)` 闭包内根据实时的 `prev.cards.length` 计算名称，多次从托盘呼起快速新增卡片不会产生重名。
+8. **P1-04 AI 超时通知去重持久化 (Persistent AI Notification Deduplication)**:
+   - `storageService` 维护持久化 `notified_rounds.json`，应用重启或休眠唤醒后不重复触发同一轮次超时弹窗。
+9. **自动化回归测试套件**:
+   - 自动化测试用例扩充至 26 项（`tests/domain.test.ts` 15项，`tests/storage-domain.test.ts` 3项，`tests/storage-service.test.ts` 8项），全部通过；
+   - TypeScript 类型检查 0 错误；
+   - Windows 安装包生成成功：`AI Task Board Setup 1.0.0.exe`（83.8 MB）。
+
+
 

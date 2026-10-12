@@ -30,6 +30,7 @@ export interface IElectronAPI {
     openUserDataFolder: () => void
     copyText: (text: string) => Promise<void>
     onQuickAction: (callback: (action: string) => void) => () => void
+    onRequestFlush: (callback: () => Promise<boolean>) => () => void
   }
 }
 
@@ -72,6 +73,20 @@ const api: IElectronAPI = {
       ipcRenderer.on('quick-action', listener)
       return () => {
         ipcRenderer.removeListener('quick-action', listener)
+      }
+    },
+    onRequestFlush: (callback: () => Promise<boolean>) => {
+      const listener = async (_event: any, correlationId: string) => {
+        try {
+          const success = await callback()
+          ipcRenderer.send(`system:flush-response:${correlationId}`, success)
+        } catch {
+          ipcRenderer.send(`system:flush-response:${correlationId}`, false)
+        }
+      }
+      ipcRenderer.on('system:request-flush', listener)
+      return () => {
+        ipcRenderer.removeListener('system:request-flush', listener)
       }
     }
   }

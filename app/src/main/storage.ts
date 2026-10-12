@@ -26,11 +26,19 @@ export interface BackupFileInfo {
   mtimeMs: number
 }
 
+interface PendingBatch {
+  data: AppData
+  forceBackup: boolean
+  resolves: Array<(val: boolean) => void>
+  rejects: Array<(err: any) => void>
+}
+
 export class StorageService {
   private userDataPath: string
   private dataFilePath: string
   private isWriting = false
-  private pendingData: AppData | null = null
+  private pendingBatch: PendingBatch | null = null
+  private inFlightWritePromise: Promise<void> | null = null
   private lastBackupTime = 0
   private recoveryRequired = false
 
@@ -132,43 +140,65 @@ export class StorageService {
     }
   }
 
-  public async saveData(data: AppData): Promise<boolean> {
+  public async saveData(data: AppData, forceBackup: boolean = false): Promise<boolean> {
     if (this.recoveryRequired) {
       console.warn('Save blocked: Storage is in recovery mode to prevent overwriting corrupted data.')
       return false
     }
 
-    this.pendingData = data
-    if (this.isWriting) {
-      return true
-    }
-
-    this.isWriting = true
-    try {
-      while (this.pendingData) {
-        const toSave = this.pendingData
-        this.pendingData = null
-        await this.writeAtomicWithBackup(toSave, false)
+    return new Promise<boolean>((resolve, reject) => {
+      if (this.pendingBatch) {
+        this.pendingBatch.data = data
+        this.pendingBatch.forceBackup = this.pendingBatch.forceBackup || forceBackup
+        this.pendingBatch.resolves.push(resolve)
+        this.pendingBatch.rejects.push(reject)
+      } else {
+        this.pendingBatch = {
+          data,
+          forceBackup,
+          resolves: [resolve],
+          rejects: [reject]
+        }
       }
-      return true
-    } catch (err) {
-      console.error('Failed to save data:', err)
-      return false
-    } finally {
-      this.isWriting = false
-    }
+      this.triggerProcessing()
+    })
+  }
+
+  private triggerProcessing(): void {
+    if (this.isWriting) return
+    this.isWriting = true
+
+    this.inFlightWritePromise = (async () => {
+      try {
+        while (this.pendingBatch) {
+          const current = this.pendingBatch
+          this.pendingBatch = null
+
+          try {
+            await this.writeAtomicWithBackup(current.data, current.forceBackup)
+            current.resolves.forEach((res) => res(true))
+          } catch (err) {
+            console.error('Failed to write storage to disk:', err)
+            current.rejects.forEach((rej) => rej(err))
+          }
+        }
+      } finally {
+        this.isWriting = false
+        this.inFlightWritePromise = null
+      }
+    })()
   }
 
   public async flush(): Promise<boolean> {
-    if (this.pendingData) {
-      const toSave = this.pendingData
-      this.pendingData = null
-      try {
-        await this.writeAtomicWithBackup(toSave, false)
-        return true
-      } catch (err) {
-        console.error('Failed to flush storage:', err)
-        return false
+    while (this.pendingBatch || this.isWriting) {
+      if (this.inFlightWritePromise) {
+        try {
+          await this.inFlightWritePromise
+        } catch {
+          // ignore error in flush
+        }
+      } else {
+        this.triggerProcessing()
       }
     }
     return true
@@ -181,8 +211,12 @@ export class StorageService {
       settings: { ...DEFAULT_SETTINGS },
       lastModified: new Date().toISOString()
     }
+    await this.flush()
     this.recoveryRequired = false
-    await this.writeAtomicWithBackup(cleanData, true)
+    const success = await this.saveData(cleanData, true)
+    if (!success) {
+      throw new Error('Failed to persist clean data')
+    }
     return cleanData
   }
 
@@ -191,12 +225,73 @@ export class StorageService {
     writeFileSync(this.dataFilePath, json, 'utf-8')
   }
 
+  private async replaceFileAtomically(tempFile: string, targetFile: string): Promise<void> {
+    if (!existsSync(targetFile)) {
+      renameSync(tempFile, targetFile)
+      return
+    }
+
+    // Target file exists. Retry renameSync for Windows transient locks (Defender, indexing)
+    const maxRetries = 5
+    let lastErr: any = null
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        renameSync(tempFile, targetFile)
+        return
+      } catch (err: any) {
+        lastErr = err
+        if (err?.code === 'EPERM' || err?.code === 'EBUSY' || err?.code === 'EEXIST') {
+          await new Promise((resolve) => setTimeout(resolve, 20 * (attempt + 1)))
+        } else {
+          break
+        }
+      }
+    }
+
+    // Rename failed after retries. Fall back to safe rollback copy.
+    // NEVER overwrite targetFile directly without a verified rollback copy!
+    const rollbackFile = `${targetFile}.rollback.${Date.now()}`
+    try {
+      copyFileSync(targetFile, rollbackFile)
+    } catch (rbErr) {
+      try {
+        unlinkSync(tempFile)
+      } catch {}
+      throw new Error(`Failed to create rollback backup before replacing file: ${rbErr}`)
+    }
+
+    try {
+      copyFileSync(tempFile, targetFile)
+      // Succeeded! Clean up rollback and temp
+      try {
+        unlinkSync(rollbackFile)
+      } catch {}
+      try {
+        unlinkSync(tempFile)
+      } catch {}
+    } catch (copyErr) {
+      // Failed! Immediately restore targetFile from rollbackFile
+      try {
+        copyFileSync(rollbackFile, targetFile)
+        unlinkSync(rollbackFile)
+      } catch {}
+      try {
+        unlinkSync(tempFile)
+      } catch {}
+      throw new Error(`Atomic write failed; original file restored from rollback: ${copyErr}`)
+    }
+  }
+
   private async writeAtomicWithBackup(data: AppData, forceBackup: boolean = false): Promise<void> {
     // Validate schema before writing to disk
     AppDataSchema.parse(data)
 
     const json = JSON.stringify(data, null, 2)
-    const tempFile = join(this.userDataPath, `${DATA_FILE_NAME}.tmp.${Date.now()}`)
+    const tempFile = join(
+      this.userDataPath,
+      `${DATA_FILE_NAME}.tmp.${Date.now()}_${Math.random().toString(36).substring(2, 6)}`
+    )
 
     // Write temp file
     writeFileSync(tempFile, json, 'utf-8')
@@ -210,21 +305,8 @@ export class StorageService {
       }
     }
 
-    // Atomic rename with Windows file-lock fallback (EBUSY, EPERM, EEXIST)
-    try {
-      renameSync(tempFile, this.dataFilePath)
-    } catch (err: any) {
-      if (err?.code === 'EPERM' || err?.code === 'EBUSY' || err?.code === 'EEXIST') {
-        copyFileSync(tempFile, this.dataFilePath)
-        try {
-          unlinkSync(tempFile)
-        } catch {
-          // ignore unlink error
-        }
-      } else {
-        throw err
-      }
-    }
+    // Atomic rename with Windows retry and rollback
+    await this.replaceFileAtomically(tempFile, this.dataFilePath)
   }
 
   private rotateBackups(): void {
@@ -253,7 +335,14 @@ export class StorageService {
               // ignore
             }
           }
-          renameSync(src, dst)
+          try {
+            renameSync(src, dst)
+          } catch {
+            try {
+              copyFileSync(src, dst)
+              unlinkSync(src)
+            } catch {}
+          }
         }
       }
 
@@ -326,15 +415,20 @@ export class StorageService {
     const parsed = JSON.parse(content)
     const validated = AppDataSchema.parse(parsed)
 
-    // Save as current data with forced backup
+    await this.flush()
     this.recoveryRequired = false
-    await this.writeAtomicWithBackup(validated, true)
+    const success = await this.saveData(validated, true)
+    if (!success) {
+      throw new Error('Failed to persist restored data')
+    }
     return validated
   }
 
   public async importData(jsonContent: string): Promise<AppData> {
     const parsed = JSON.parse(jsonContent)
     const validated = AppDataSchema.parse(parsed)
+
+    await this.flush()
 
     // Create an explicit pre-import backup if data file exists
     if (existsSync(this.dataFilePath)) {
@@ -350,7 +444,10 @@ export class StorageService {
     }
 
     this.recoveryRequired = false
-    await this.writeAtomicWithBackup(validated, true)
+    const success = await this.saveData(validated, true)
+    if (!success) {
+      throw new Error('Failed to persist imported data')
+    }
     return validated
   }
 
@@ -368,5 +465,32 @@ export class StorageService {
       )
     }
     return readFileSync(this.dataFilePath, 'utf-8')
+  }
+
+  public getNotifiedRounds(): Set<string> {
+    const notifiedPath = join(this.userDataPath, 'notified_rounds.json')
+    if (existsSync(notifiedPath)) {
+      try {
+        const content = readFileSync(notifiedPath, 'utf-8')
+        const parsed = JSON.parse(content)
+        if (Array.isArray(parsed)) {
+          return new Set(parsed)
+        }
+      } catch {
+        // ignore parse error
+      }
+    }
+    return new Set<string>()
+  }
+
+  public markRoundNotified(roundKey: string): void {
+    const rounds = this.getNotifiedRounds()
+    rounds.add(roundKey)
+    const notifiedPath = join(this.userDataPath, 'notified_rounds.json')
+    try {
+      writeFileSync(notifiedPath, JSON.stringify(Array.from(rounds)), 'utf-8')
+    } catch (err) {
+      console.warn('Failed to persist notified round:', err)
+    }
   }
 }

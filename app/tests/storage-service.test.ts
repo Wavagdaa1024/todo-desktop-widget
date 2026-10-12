@@ -150,4 +150,49 @@ describe('StorageService (P0 & P1-07 Regression Tests)', () => {
     const saved = await storage.saveData(sampleData)
     expect(saved).toBe(true)
   })
+
+  it('P0-03: concurrent saveData calls resolve only after disk write settles and flush waits', async () => {
+    const data1: AppData = {
+      ...sampleData,
+      cards: [{ ...sampleData.cards[0], title: 'Version 1' }]
+    }
+    const data2: AppData = {
+      ...sampleData,
+      cards: [{ ...sampleData.cards[0], title: 'Version 2' }]
+    }
+    const data3: AppData = {
+      ...sampleData,
+      cards: [{ ...sampleData.cards[0], title: 'Version 3' }]
+    }
+
+    // Fire 3 saves concurrently
+    const p1 = storage.saveData(data1)
+    const p2 = storage.saveData(data2)
+    const p3 = storage.saveData(data3)
+
+    // flush should wait for all 3 to finish
+    await storage.flush()
+    const [r1, r2, r3] = await Promise.all([p1, p2, p3])
+
+    expect(r1).toBe(true)
+    expect(r2).toBe(true)
+    expect(r3).toBe(true)
+
+    // Final data on disk must reflect the latest state
+    const onDisk = JSON.parse(readFileSync(storage.getDataFilePath(), 'utf-8'))
+    expect(onDisk.cards[0].title).toBe('Version 3')
+  })
+
+  it('P1-04: notified rounds persist across restarts in notified_rounds.json', () => {
+    storage.markRoundNotified('round_1_active')
+    storage.markRoundNotified('round_2_active')
+
+    // Create a new StorageService instance pointing to the same folder
+    const storage2 = new StorageService(tempDir)
+    const rounds = storage2.getNotifiedRounds()
+
+    expect(rounds.has('round_1_active')).toBe(true)
+    expect(rounds.has('round_2_active')).toBe(true)
+    expect(rounds.has('unnotified_round')).toBe(false)
+  })
 })
