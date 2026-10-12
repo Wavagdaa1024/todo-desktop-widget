@@ -33,6 +33,16 @@ function getPreloadPath(): string {
   return join(__dirname, '../preload/index.js')
 }
 
+function calculateWidgetPosition(): { x: number; y: number } {
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const { x: waX, y: waY, width: waW, height: waH } = primaryDisplay.workArea
+  const widgetWidth = 360
+  const widgetHeight = 490
+  const x = Math.round(waX + waW - widgetWidth - 16)
+  const y = Math.round(waY + waH - widgetHeight - 16)
+  return { x, y }
+}
+
 function createMainWindow(): void {
   const iconPath = getIconPath()
 
@@ -52,7 +62,7 @@ function createMainWindow(): void {
     }
   })
 
-  if (currentSettings.alwaysOnTop) {
+  if (currentSettings?.alwaysOnTop) {
     mainWindow.setAlwaysOnTop(true)
   }
 
@@ -68,9 +78,11 @@ function createMainWindow(): void {
     return { action: 'deny' }
   })
 
-  // Close to tray logic
-  mainWindow.on('close', (event) => {
-    if (!isQuitting && currentSettings.closeToTray) {
+  // Close to tray logic or exit (P1-05)
+  mainWindow.on('close', async (event) => {
+    if (isQuitting) return
+
+    if (currentSettings && currentSettings.closeToTray) {
       event.preventDefault()
       mainWindow?.hide()
 
@@ -78,7 +90,17 @@ function createMainWindow(): void {
         currentSettings.hasSeenTrayNotice = true
         showNotification('AI Task Board 已在托盘运行', '点击托盘图标可弹出悬浮小面板，右键托盘图标可打开完整工作台或退出。')
       }
+    } else {
+      // User chose to quit app on window close
+      event.preventDefault()
+      isQuitting = true
+      await storageService.flush()
+      app.quit()
     }
+  })
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
@@ -89,12 +111,9 @@ function createMainWindow(): void {
 }
 
 function createWidgetWindow(): void {
-  const primaryDisplay = screen.getPrimaryDisplay()
-  const { width, height } = primaryDisplay.workAreaSize
+  const { x, y } = calculateWidgetPosition()
   const widgetWidth = 360
   const widgetHeight = 490
-  const x = Math.round(width - widgetWidth - 16)
-  const y = Math.round(height - widgetHeight - 16)
 
   widgetWindow = new BrowserWindow({
     width: widgetWidth,
@@ -123,6 +142,10 @@ function createWidgetWindow(): void {
     }
   })
 
+  widgetWindow.on('closed', () => {
+    widgetWindow = null
+  })
+
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     widgetWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#widget`)
   } else {
@@ -131,21 +154,21 @@ function createWidgetWindow(): void {
 }
 
 function toggleWidgetWindow(): void {
+  if (!widgetWindow || widgetWindow.isDestroyed()) {
+    createWidgetWindow()
+  }
   if (!widgetWindow) return
+
   if (widgetWindow.isVisible()) {
     widgetWindow.hide()
   } else {
-    const primaryDisplay = screen.getPrimaryDisplay()
-    const { width, height } = primaryDisplay.workAreaSize
-    const widgetWidth = 360
-    const widgetHeight = 490
-    const x = Math.round(width - widgetWidth - 16)
-    const y = Math.round(height - widgetHeight - 16)
+    const { x, y } = calculateWidgetPosition()
     widgetWindow.setPosition(x, y)
     widgetWindow.show()
     widgetWindow.focus()
   }
 }
+
 
 function createTray(): void {
   const iconPath = getIconPath()
@@ -194,8 +217,9 @@ function createTray(): void {
     { type: 'separator' },
     {
       label: '真正退出',
-      click: (): void => {
+      click: async (): Promise<void> => {
         isQuitting = true
+        await storageService.flush()
         app.quit()
       }
     }
@@ -216,6 +240,15 @@ function showNotification(title: string, body: string): void {
       body,
       icon: getIconPath()
     }).show()
+  }
+}
+
+function broadcastDataUpdated(data: AppData): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('data-updated', data)
+  }
+  if (widgetWindow && !widgetWindow.isDestroyed()) {
+    widgetWindow.webContents.send('data-updated', data)
   }
 }
 
@@ -258,10 +291,13 @@ app.whenReady().then(() => {
   createWidgetWindow()
   createTray()
 
-  // By default, pop up the widget window at startup so user immediately sees the Figure 1 widget!
-  setTimeout(() => {
-    toggleWidgetWindow()
-  }, 500)
+  // Respect silent autostart (P2-04)
+  const isSilentStart = process.argv.includes('--hidden') || app.getLoginItemSettings().wasOpenedAsHidden
+  if (!isSilentStart) {
+    setTimeout(() => {
+      toggleWidgetWindow()
+    }, 500)
+  }
 
   // Periodic AI timeout monitor
   setInterval(checkAiTimeouts, 60000)
@@ -274,8 +310,13 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('before-quit', () => {
-  isQuitting = true
+app.on('before-quit', async (event) => {
+  if (!isQuitting) {
+    isQuitting = true
+    event.preventDefault()
+    await storageService.flush()
+    app.quit()
+  }
 })
 
 app.on('window-all-closed', () => {
@@ -291,7 +332,11 @@ ipcMain.handle('storage:getInitialData', async () => {
 
 ipcMain.handle('storage:saveData', async (_, data: AppData) => {
   currentSettings = data.settings
-  return storageService.saveData(data)
+  const success = await storageService.saveData(data)
+  if (success) {
+    broadcastDataUpdated(data)
+  }
+  return success
 })
 
 ipcMain.handle('storage:exportData', async () => {
@@ -299,8 +344,9 @@ ipcMain.handle('storage:exportData', async () => {
 })
 
 ipcMain.handle('storage:importData', async (_, jsonContent: string) => {
-  const result = storageService.importData(jsonContent)
+  const result = await storageService.importData(jsonContent)
   currentSettings = result.settings
+  broadcastDataUpdated(result)
   return result
 })
 
@@ -309,9 +355,21 @@ ipcMain.handle('storage:getBackups', async () => {
 })
 
 ipcMain.handle('storage:restoreBackup', async (_, backupName: string) => {
-  const result = storageService.restoreFromBackup(backupName)
+  const result = await storageService.restoreFromBackup(backupName)
   currentSettings = result.settings
+  broadcastDataUpdated(result)
   return result
+})
+
+ipcMain.handle('storage:initializeClean', async () => {
+  const cleanData = await storageService.initializeCleanAfterCorruption()
+  currentSettings = cleanData.settings
+  broadcastDataUpdated(cleanData)
+  return cleanData
+})
+
+ipcMain.handle('storage:flush', async () => {
+  return storageService.flush()
 })
 
 ipcMain.handle('storage:getDataFilePath', async () => {
@@ -340,10 +398,18 @@ ipcMain.on('window:setAlwaysOnTop', (_, alwaysOnTop: boolean) => {
 })
 
 ipcMain.on('window:openMainBoard', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createMainWindow()
+  }
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore()
     if (!mainWindow.isVisible()) mainWindow.show()
     mainWindow.focus()
+  }
+
+  // Dual window requirement: unpinned widget hides when opening main board
+  if (!isWidgetPinned && widgetWindow && !widgetWindow.isDestroyed() && widgetWindow.isVisible()) {
+    widgetWindow.hide()
   }
 })
 
@@ -355,6 +421,7 @@ ipcMain.on('window:setWidgetPin', (_, pinned: boolean) => {
   isWidgetPinned = pinned
   widgetWindow?.setAlwaysOnTop(pinned)
 })
+
 
 // System control IPC
 ipcMain.handle('system:setAutoStart', async (_, enable: boolean) => {

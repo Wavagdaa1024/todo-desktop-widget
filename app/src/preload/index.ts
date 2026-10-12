@@ -1,15 +1,18 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { AppData } from '../renderer/src/domain/types'
+import { AppData, StorageInitialResult } from '../renderer/src/domain/types'
 
 export interface IElectronAPI {
   storage: {
-    getInitialData: () => Promise<{ data: AppData; recoveredFromBackup?: boolean; isCorrupted?: boolean }>
+    getInitialData: () => Promise<StorageInitialResult>
     saveData: (data: AppData) => Promise<boolean>
     exportData: () => Promise<string>
     importData: (json: string) => Promise<AppData>
     getBackups: () => Promise<Array<{ name: string; path: string; time: string; size: number }>>
     restoreBackup: (name: string) => Promise<AppData>
     getDataFilePath: () => Promise<string>
+    flush: () => Promise<boolean>
+    initializeClean: () => Promise<AppData>
+    onDataUpdated: (callback: (data: AppData) => void) => () => void
   }
   window: {
     minimize: () => void
@@ -26,6 +29,7 @@ export interface IElectronAPI {
     showNotification: (title: string, body: string) => void
     openUserDataFolder: () => void
     copyText: (text: string) => Promise<void>
+    onQuickAction: (callback: (action: string) => void) => () => void
   }
 }
 
@@ -37,7 +41,16 @@ const api: IElectronAPI = {
     importData: (json: string) => ipcRenderer.invoke('storage:importData', json),
     getBackups: () => ipcRenderer.invoke('storage:getBackups'),
     restoreBackup: (name: string) => ipcRenderer.invoke('storage:restoreBackup', name),
-    getDataFilePath: () => ipcRenderer.invoke('storage:getDataFilePath')
+    getDataFilePath: () => ipcRenderer.invoke('storage:getDataFilePath'),
+    flush: () => ipcRenderer.invoke('storage:flush'),
+    initializeClean: () => ipcRenderer.invoke('storage:initializeClean'),
+    onDataUpdated: (callback: (data: AppData) => void) => {
+      const listener = (_event: any, data: AppData) => callback(data)
+      ipcRenderer.on('data-updated', listener)
+      return () => {
+        ipcRenderer.removeListener('data-updated', listener)
+      }
+    }
   },
   window: {
     minimize: () => ipcRenderer.send('window:minimize'),
@@ -53,9 +66,17 @@ const api: IElectronAPI = {
     getAutoStart: () => ipcRenderer.invoke('system:getAutoStart'),
     showNotification: (title: string, body: string) => ipcRenderer.send('system:showNotification', { title, body }),
     openUserDataFolder: () => ipcRenderer.send('system:openUserDataFolder'),
-    copyText: (text: string) => ipcRenderer.invoke('system:copyText', text)
+    copyText: (text: string) => ipcRenderer.invoke('system:copyText', text),
+    onQuickAction: (callback: (action: string) => void) => {
+      const listener = (_event: any, action: string) => callback(action)
+      ipcRenderer.on('quick-action', listener)
+      return () => {
+        ipcRenderer.removeListener('quick-action', listener)
+      }
+    }
   }
 }
+
 
 if (process.contextIsolated) {
   try {

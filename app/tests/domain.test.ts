@@ -5,7 +5,9 @@ import {
   toggleTask,
   addTaskToParent,
   deleteTaskItem,
-  getAllLeaves
+  getAllLeaves,
+  reorderCards,
+  reconcileCardStatus
 } from '../src/renderer/src/domain/calculator'
 import { getDueDateStatus, isCardOverdue } from '../src/renderer/src/domain/date'
 import { TaskItem, Card } from '../src/renderer/src/domain/types'
@@ -195,3 +197,137 @@ describe('Domain: Due Date & Overdue Calculation', () => {
     expect(isCardOverdue(card, today)).toBe(false)
   })
 })
+
+describe('Domain: Card Reordering (P1-01)', () => {
+  it('correctly reorders cards by stable ID regardless of initial array ordering', () => {
+    const cards: Card[] = [
+      {
+        id: 'card-c',
+        title: 'Card C',
+        status: 'TODO',
+        owner: 'SELF',
+        order: 2,
+        collapsed: false,
+        tasks: [],
+        aiWork: { history: [] },
+        createdAt: '',
+        updatedAt: ''
+      },
+      {
+        id: 'card-a',
+        title: 'Card A',
+        status: 'TODO',
+        owner: 'SELF',
+        order: 0,
+        collapsed: false,
+        tasks: [],
+        aiWork: { history: [] },
+        createdAt: '',
+        updatedAt: ''
+      },
+      {
+        id: 'card-b',
+        title: 'Card B',
+        status: 'TODO',
+        owner: 'SELF',
+        order: 1,
+        collapsed: false,
+        tasks: [],
+        aiWork: { history: [] },
+        createdAt: '',
+        updatedAt: ''
+      }
+    ]
+
+    // Move 'card-b' up: it should swap with 'card-a'
+    const reordered = reorderCards(cards, 'card-b', 'up')
+    const sorted = [...reordered].sort((a, b) => a.order - b.order)
+    expect(sorted[0].id).toBe('card-b')
+    expect(sorted[1].id).toBe('card-a')
+    expect(sorted[2].id).toBe('card-c')
+
+    // Move 'card-b' up again (already at top): should return same order
+    const topAgain = reorderCards(reordered, 'card-b', 'up')
+    const sortedTop = [...topAgain].sort((a, b) => a.order - b.order)
+    expect(sortedTop[0].id).toBe('card-b')
+
+    // Move 'card-b' down: should swap back with 'card-a'
+    const downResult = reorderCards(topAgain, 'card-b', 'down')
+    const sortedDown = [...downResult].sort((a, b) => a.order - b.order)
+    expect(sortedDown[0].id).toBe('card-a')
+    expect(sortedDown[1].id).toBe('card-b')
+    expect(sortedDown[2].id).toBe('card-c')
+  })
+})
+
+describe('Domain: Card Status Reconciliation (P1-06)', () => {
+  it('reverts DONE card to WAITING_ACCEPT if AI info is present and tasks become incomplete', () => {
+    const card: Card = {
+      id: 'c1',
+      title: 'AI Task',
+      status: 'DONE',
+      owner: 'GEMINI',
+      order: 0,
+      collapsed: false,
+      tasks: [
+        { id: 't1', title: 'Task 1', completed: true, order: 0, children: [], createdAt: '', updatedAt: '' }
+      ],
+      aiWork: { activeStartTime: '2026-10-12T00:00:00Z', history: [] },
+      createdAt: '',
+      updatedAt: ''
+    }
+
+    // New incomplete task added
+    const updatedTasks: TaskItem[] = [
+      { id: 't1', title: 'Task 1', completed: true, order: 0, children: [], createdAt: '', updatedAt: '' },
+      { id: 't2', title: 'New Task 2', completed: false, order: 1, children: [], createdAt: '', updatedAt: '' }
+    ]
+
+    const reconciled = reconcileCardStatus(card, updatedTasks)
+    expect(reconciled.status).toBe('WAITING_ACCEPT')
+    expect(reconciled.tasks.length).toBe(2)
+  })
+
+  it('reverts DONE card to TODO if no AI info is present and tasks become incomplete', () => {
+    const card: Card = {
+      id: 'c2',
+      title: 'Manual Task',
+      status: 'DONE',
+      owner: 'SELF',
+      order: 0,
+      collapsed: false,
+      tasks: [
+        { id: 't1', title: 'Task 1', completed: true, order: 0, children: [], createdAt: '', updatedAt: '' }
+      ],
+      aiWork: { history: [] },
+      createdAt: '',
+      updatedAt: ''
+    }
+
+    const updatedTasks: TaskItem[] = [
+      { id: 't1', title: 'Task 1', completed: false, order: 0, children: [], createdAt: '', updatedAt: '' }
+    ]
+
+    const reconciled = reconcileCardStatus(card, updatedTasks)
+    expect(reconciled.status).toBe('TODO')
+  })
+
+  it('leaves non-DONE cards untouched during reconciliation', () => {
+    const card: Card = {
+      id: 'c3',
+      title: 'Running Task',
+      status: 'AI_RUNNING',
+      owner: 'CODEX',
+      order: 0,
+      collapsed: false,
+      tasks: [],
+      aiWork: { history: [] },
+      createdAt: '',
+      updatedAt: ''
+    }
+
+    const reconciled = reconcileCardStatus(card, [])
+    expect(reconciled.status).toBe('AI_RUNNING')
+  })
+})
+

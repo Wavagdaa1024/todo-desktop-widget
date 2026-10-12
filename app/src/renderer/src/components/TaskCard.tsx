@@ -5,7 +5,8 @@ import {
   addTaskToParent,
   deleteTaskItem,
   updateTaskItem,
-  toggleTask
+  toggleTask,
+  reconcileCardStatus
 } from '../domain/calculator'
 import { formatDueDateBadge, isCardOverdue } from '../domain/date'
 import { TaskTree } from './TaskTree'
@@ -19,8 +20,11 @@ import {
   CheckCircle2,
   AlertCircle,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  GripVertical,
+  Calendar
 } from 'lucide-react'
+
 
 interface TaskCardProps {
   card: Card
@@ -30,6 +34,7 @@ interface TaskCardProps {
   onMoveOrder: (direction: 'up' | 'down') => void
   isFirst: boolean
   isLast: boolean
+  onNotifyUndo?: (message: string, undoAction: () => void) => void
 }
 
 export const TaskCard: React.FC<TaskCardProps> = ({
@@ -39,7 +44,8 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   onDuplicateCard,
   onMoveOrder,
   isFirst,
-  isLast
+  isLast,
+  onNotifyUndo
 }) => {
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState(card.title)
@@ -48,6 +54,10 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   const [newTaskInput, setNewTaskInput] = useState('')
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showDoneConfirm, setShowDoneConfirm] = useState(false)
+  const [showDetailModal, setShowDetailModal] = useState(false)
+  const [cardDueDateDraft, setCardDueDateDraft] = useState(card.dueDate || '')
+  const [cardCategoryDraft, setCardCategoryDraft] = useState(card.category || '')
+  const [cardDescDraft, setCardDescDraft] = useState(card.description || '')
 
   const titleInputRef = useRef<HTMLInputElement>(null)
   const progress = calculateProgress(card.tasks)
@@ -122,28 +132,23 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   // Task tree operations
   const handleToggleTask = (taskId: string) => {
     const { updatedTasks } = toggleTask(card.tasks, taskId)
-    const newProgress = calculateProgress(updatedTasks)
-
-    // Rule: if card was DONE and a task is unchecked, revert card status
-    let nextStatus = card.status
-    if (card.status === 'DONE' && newProgress.doneLeaves < newProgress.totalLeaves) {
-      nextStatus = 'WAITING_ACCEPT'
-    }
-
-    onUpdateCard({ tasks: updatedTasks, status: nextStatus })
+    const reconciled = reconcileCardStatus(card, updatedTasks)
+    onUpdateCard({ tasks: reconciled.tasks, status: reconciled.status })
   }
 
   const handleAddTopTask = () => {
     const trimmed = newTaskInput.trim()
     if (!trimmed) return
     const updated = addTaskToParent(card.tasks, null, trimmed)
-    onUpdateCard({ tasks: updated })
+    const reconciled = reconcileCardStatus(card, updated)
+    onUpdateCard({ tasks: reconciled.tasks, status: reconciled.status })
     setNewTaskInput('')
   }
 
   const handleAddSubtask = (parentId: string, title: string, dueDate?: string) => {
     const updated = addTaskToParent(card.tasks, parentId, title, { dueDate })
-    onUpdateCard({ tasks: updated })
+    const reconciled = reconcileCardStatus(card, updated)
+    onUpdateCard({ tasks: reconciled.tasks, status: reconciled.status })
   }
 
   const handleUpdateTask = (
@@ -151,13 +156,33 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     updates: Partial<Pick<TaskItem, 'title' | 'notes' | 'dueDate'>>
   ) => {
     const updated = updateTaskItem(card.tasks, taskId, updates)
-    onUpdateCard({ tasks: updated })
+    const reconciled = reconcileCardStatus(card, updated)
+    onUpdateCard({ tasks: reconciled.tasks, status: reconciled.status })
   }
 
   const handleDeleteTask = (taskId: string) => {
+    const previousTasks = [...card.tasks]
+    const previousStatus = card.status
     const { updatedTasks } = deleteTaskItem(card.tasks, taskId)
-    onUpdateCard({ tasks: updatedTasks })
+    const reconciled = reconcileCardStatus(card, updatedTasks)
+    onUpdateCard({ tasks: reconciled.tasks, status: reconciled.status })
+
+    if (onNotifyUndo) {
+      onNotifyUndo('已删除任务', () => {
+        onUpdateCard({ tasks: previousTasks, status: previousStatus })
+      })
+    }
   }
+
+  const handleSaveCardDetails = () => {
+    onUpdateCard({
+      dueDate: cardDueDateDraft || undefined,
+      category: cardCategoryDraft.trim() || undefined,
+      description: cardDescDraft.trim() || undefined
+    })
+    setShowDetailModal(false)
+  }
+
 
   const handleAddProgressLog = (log: Omit<ProgressLog, 'id' | 'timestamp'>) => {
     const newLogItem: ProgressLog = {
@@ -195,24 +220,27 @@ export const TaskCard: React.FC<TaskCardProps> = ({
         <div className="flex items-start justify-between gap-2">
           {/* Left: Reorder handle & Expand button & Title */}
           <div className="flex items-start gap-1.5 flex-1 min-w-0">
-            {/* Reorder Buttons */}
-            <div className="flex flex-col -mt-0.5 opacity-40 group-hover:opacity-100 transition-opacity">
-              <button
-                disabled={isFirst}
-                onClick={() => onMoveOrder('up')}
-                className="p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 disabled:opacity-20"
-                title="向上移动"
-              >
-                <ArrowUp className="w-3 h-3" />
-              </button>
-              <button
-                disabled={isLast}
-                onClick={() => onMoveOrder('down')}
-                className="p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 disabled:opacity-20"
-                title="向下移动"
-              >
-                <ArrowDown className="w-3 h-3" />
-              </button>
+            {/* Reorder Buttons & Grip Handle (P2-05) */}
+            <div className="flex items-center -mt-0.5 opacity-40 group-hover:opacity-100 transition-opacity">
+              <GripVertical className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 mr-0.5 self-center" />
+              <div className="flex flex-col">
+                <button
+                  disabled={isFirst}
+                  onClick={() => onMoveOrder('up')}
+                  className="p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 disabled:opacity-20"
+                  title="向上移动"
+                >
+                  <ArrowUp className="w-3 h-3" />
+                </button>
+                <button
+                  disabled={isLast}
+                  onClick={() => onMoveOrder('down')}
+                  className="p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 disabled:opacity-20"
+                  title="向下移动"
+                >
+                  <ArrowDown className="w-3 h-3" />
+                </button>
+              </div>
             </div>
 
             {/* Collapse / Expand toggle */}
@@ -277,7 +305,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             </button>
 
             {showMenu && (
-              <div className="absolute right-0 top-6 z-20 w-36 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg py-1 text-xs">
+              <div className="absolute right-0 top-6 z-20 w-40 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg py-1 text-xs">
                 <button
                   onClick={() => {
                     setIsEditingTitle(true)
@@ -289,12 +317,25 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                 </button>
                 <button
                   onClick={() => {
+                    setCardDueDateDraft(card.dueDate || '')
+                    setCardCategoryDraft(card.category || '')
+                    setCardDescDraft(card.description || '')
+                    setShowDetailModal(true)
+                    setShowMenu(false)
+                  }}
+                  className="w-full text-left px-3 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5"
+                >
+                  <Calendar className="w-3.5 h-3.5 text-blue-500" />
+                  <span>编辑详情/截止日</span>
+                </button>
+                <button
+                  onClick={() => {
                     onDuplicateCard(card)
                     setShowMenu(false)
                   }}
                   className="w-full text-left px-3 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5"
                 >
-                  <Copy className="w-3 h-3" />
+                  <Copy className="w-3.5 h-3.5" />
                   <span>复制卡片</span>
                 </button>
                 <div className="my-1 border-t border-slate-100 dark:border-slate-700" />
@@ -305,13 +346,14 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                   }}
                   className="w-full text-left px-3 py-1.5 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 flex items-center gap-1.5"
                 >
-                  <Trash2 className="w-3 h-3" />
+                  <Trash2 className="w-3.5 h-3.5" />
                   <span>删除卡片...</span>
                 </button>
               </div>
             )}
           </div>
         </div>
+
 
         {/* Status & Owner & Progress Meta Row (Visible even when folded) */}
         <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -352,10 +394,17 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             </select>
           </div>
 
-          {/* Due date badge */}
+          {/* Due date badge (clickable to edit) */}
           {dateBadge && (
-            <span
-              className={`px-1.5 py-0.5 rounded text-[11px] font-mono ${
+            <button
+              onClick={() => {
+                setCardDueDateDraft(card.dueDate || '')
+                setCardCategoryDraft(card.category || '')
+                setCardDescDraft(card.description || '')
+                setShowDetailModal(true)
+              }}
+              title="点击修改卡片截止日期与详情"
+              className={`px-1.5 py-0.5 rounded text-[11px] font-mono hover:opacity-80 transition-opacity ${
                 dateBadge.status === 'OVERDUE'
                   ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 font-semibold'
                   : dateBadge.status === 'TODAY'
@@ -364,7 +413,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
               }`}
             >
               {dateBadge.text}
-            </span>
+            </button>
           )}
         </div>
 
@@ -401,14 +450,16 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             </div>
           )}
 
-          {/* Quick Add Top-level Task */}
+          {/* Quick Add Top-level Task with IME Composition Guard (P2-01) */}
           <div className="flex items-center gap-1.5 py-1.5 mb-1">
             <input
               type="text"
               value={newTaskInput}
               onChange={(e) => setNewTaskInput(e.target.value)}
+              onCompositionStart={() => setIsComposing(true)}
+              onCompositionEnd={() => setIsComposing(false)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') {
+                if (e.key === 'Enter' && !isComposing && !e.nativeEvent.isComposing) {
                   e.preventDefault()
                   handleAddTopTask()
                 }
@@ -425,6 +476,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
               </button>
             )}
           </div>
+
 
           {/* Task Tree */}
           {card.tasks.length > 0 ? (
@@ -514,6 +566,84 @@ export const TaskCard: React.FC<TaskCardProps> = ({
           </div>
         </div>
       )}
+
+      {/* Card Detail Edit Modal (P1-03) */}
+      {showDetailModal && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 shadow-xl max-w-sm w-full text-xs space-y-4">
+            <h4 className="font-bold text-sm text-slate-800 dark:text-slate-100 flex items-center gap-2">
+              <Calendar className="w-4 h-4 text-blue-600" />
+              <span>编辑卡片详情与截止日期</span>
+            </h4>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  截止日期 (本地日历 YYYY-MM-DD)
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="date"
+                    value={cardDueDateDraft}
+                    onChange={(e) => setCardDueDateDraft(e.target.value)}
+                    className="flex-1 px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200"
+                  />
+                  {cardDueDateDraft && (
+                    <button
+                      onClick={() => setCardDueDateDraft('')}
+                      className="px-2 py-1 text-slate-500 hover:text-slate-700 text-xs border border-slate-200 dark:border-slate-700 rounded-lg"
+                    >
+                      清除
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  项目分类
+                </label>
+                <input
+                  type="text"
+                  placeholder="如：控制调试、联合仿真、技术文档..."
+                  value={cardCategoryDraft}
+                  onChange={(e) => setCardCategoryDraft(e.target.value)}
+                  className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  项目描述 / 背景目标
+                </label>
+                <textarea
+                  rows={3}
+                  placeholder="简述该项目的主要任务目标与交付范围..."
+                  value={cardDescDraft}
+                  onChange={(e) => setCardDescDraft(e.target.value)}
+                  className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <button
+                onClick={() => setShowDetailModal(false)}
+                className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleSaveCardDetails}
+                className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium"
+              >
+                保存详情
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
+

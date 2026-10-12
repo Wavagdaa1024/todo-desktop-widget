@@ -1,4 +1,4 @@
-import { TaskItem } from './types'
+import { TaskItem, Card } from './types'
 
 export function isLeaf(task: TaskItem): boolean {
   return !task.children || task.children.length === 0
@@ -284,3 +284,41 @@ export function reorderSiblingTasks(
 
   return nextTasks
 }
+
+export function reconcileCardStatus(card: Card, newTasks?: TaskItem[]): Card {
+  const tasksToInspect = newTasks !== undefined ? newTasks : card.tasks
+  let nextStatus = card.status
+  if (card.status === 'DONE') {
+    const prog = calculateProgress(tasksToInspect)
+    if (prog.totalLeaves > 0 && prog.doneLeaves < prog.totalLeaves) {
+      nextStatus = card.owner === 'SELF' ? 'TODO' : 'WAITING_ACCEPT'
+    }
+  }
+  return {
+    ...card,
+    tasks: tasksToInspect,
+    status: nextStatus
+  }
+}
+
+
+export function reorderCards(
+  cards: Card[],
+  targetCardId: string,
+  direction: 'up' | 'down'
+): Card[] {
+  const sorted = [...cards].sort((a, b) => a.order - b.order)
+  const idx = sorted.findIndex((c) => c.id === targetCardId)
+  if (idx === -1) return cards
+
+  const targetIdx = direction === 'up' ? idx - 1 : idx + 1
+  if (targetIdx < 0 || targetIdx >= sorted.length) return cards
+
+  const [moved] = sorted.splice(idx, 1)
+  sorted.splice(targetIdx, 0, moved)
+  sorted.forEach((c, i) => {
+    c.order = i
+  })
+  return sorted
+}
+

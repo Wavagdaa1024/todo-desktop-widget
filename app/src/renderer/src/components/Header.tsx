@@ -34,7 +34,7 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   // Compute overall stats
   const totalCards = cards.length
-  const pendingCards = cards.filter((c) => c.status !== 'DONE').length
+  const todoCards = cards.filter((c) => c.status === 'TODO').length
   const aiRunningCards = cards.filter((c) => c.status === 'AI_RUNNING').length
   const waitingAcceptCards = cards.filter((c) => c.status === 'WAITING_ACCEPT').length
   const overdueCards = cards.filter((c) => isCardOverdue(c)).length
@@ -100,8 +100,9 @@ export const Header: React.FC<HeaderProps> = ({
                 : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:border-slate-300'
             }`}
           >
-            待处理 <span className="font-semibold ml-1">{pendingCards}</span>
+            待开始 <span className="font-semibold ml-1">{todoCards}</span>
           </button>
+
 
           <button
             onClick={() => onFilterChange('AI_RUNNING')}

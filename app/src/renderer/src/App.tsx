@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { Card, AppData, DEFAULT_SETTINGS } from './domain/types'
 import { Header, FilterStatus, SortOption } from './components/Header'
 import { TaskCard } from './components/TaskCard'
 import { SettingsModal } from './components/SettingsModal'
 import { isCardOverdue } from './domain/date'
-import { Sparkles, Plus, Undo2 } from 'lucide-react'
+import { reorderCards } from './domain/calculator'
+import { Sparkles, Plus, Undo2, AlertTriangle } from 'lucide-react'
 
 export const App: React.FC = () => {
   const [data, setData] = useState<AppData>({
@@ -20,16 +21,23 @@ export const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved')
   const [isLoaded, setIsLoaded] = useState(false)
+  const [isRecoveryMode, setIsRecoveryMode] = useState(false)
   const [undoToast, setUndoToast] = useState<{ message: string; action: () => void } | null>(null)
+  const isRemoteUpdate = useRef(false)
 
   // Load initial data on mount
   useEffect(() => {
     if (window.electronAPI) {
       window.electronAPI.storage.getInitialData().then((res) => {
         setData(res.data)
-        setIsLoaded(true)
-        if (res.isCorrupted) {
-          alert('提示：检测到原数据文件异常，已自动从最近一份安全备份中恢复，或初始化了安全存储。')
+        if (res.recoveryRequired) {
+          setIsRecoveryMode(true)
+          setIsLoaded(false)
+        } else {
+          setIsLoaded(true)
+          if (res.recoveredFromBackup) {
+            alert('提示：检测到原数据文件异常，已自动从最近一份安全备份中恢复。')
+          }
         }
       })
     } else {
@@ -37,9 +45,13 @@ export const App: React.FC = () => {
     }
   }, [])
 
-  // Auto-save debounced whenever cards or settings change
+  // Auto-save debounced whenever cards or settings change (Blocked in recovery mode: P0-02)
   useEffect(() => {
-    if (!isLoaded) return
+    if (!isLoaded || isRecoveryMode) return
+    if (isRemoteUpdate.current) {
+      isRemoteUpdate.current = false
+      return
+    }
 
     setSaveStatus('saving')
     const timer = setTimeout(async () => {
@@ -57,7 +69,8 @@ export const App: React.FC = () => {
     }, 400)
 
     return () => clearTimeout(timer)
-  }, [data, isLoaded])
+  }, [data, isLoaded, isRecoveryMode])
+
 
   // Sync theme
   useEffect(() => {
@@ -97,6 +110,29 @@ export const App: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [data.cards])
+
+  // Listen for data updates broadcast from Main (Dual-window event sync)
+  useEffect(() => {
+    if (!window.electronAPI?.storage?.onDataUpdated) return
+    const unsubscribe = window.electronAPI.storage.onDataUpdated((remoteData) => {
+      isRemoteUpdate.current = true
+      setData(remoteData)
+    })
+    return () => unsubscribe()
+  }, [])
+
+  // Listen for tray quick actions (P1-02)
+  useEffect(() => {
+    if (!window.electronAPI?.system?.onQuickAction) return
+    const unsubscribe = window.electronAPI.system.onQuickAction((action) => {
+      if (action === 'new-card') {
+        handleAddNewCard()
+      } else if (action === 'filter-waiting-accept') {
+        setCurrentFilter('WAITING_ACCEPT')
+      }
+    })
+    return () => unsubscribe()
+  }, [])
 
   // Card Operations
   const handleAddNewCard = () => {
@@ -193,23 +229,26 @@ export const App: React.FC = () => {
     }))
   }
 
-  const handleMoveCardOrder = (index: number, direction: 'up' | 'down') => {
-    const targetIndex = direction === 'up' ? index - 1 : index + 1
-    if (targetIndex < 0 || targetIndex >= data.cards.length) return
-
-    const nextCards = [...data.cards]
-    const [moved] = nextCards.splice(index, 1)
-    nextCards.splice(targetIndex, 0, moved)
-    nextCards.forEach((c, idx) => {
-      c.order = idx
-    })
-
+  // Card Reordering based on stable ID (P1-01)
+  const handleMoveCardOrder = (cardId: string, direction: 'up' | 'down') => {
     setData((prev) => ({
       ...prev,
-      cards: nextCards,
+      cards: reorderCards(prev.cards, cardId, direction),
       lastModified: new Date().toISOString()
     }))
   }
+
+  const handleInitializeClean = async () => {
+    if (confirm('确认放弃损坏的原文件并全新初始化？此操作将清空损坏卡片数据并恢复安全状态。')) {
+      if (window.electronAPI?.storage?.initializeClean) {
+        const clean = await window.electronAPI.storage.initializeClean()
+        setData(clean)
+        setIsRecoveryMode(false)
+        setIsLoaded(true)
+      }
+    }
+  }
+
 
   // Sample Project Creation (As requested by Section 1.1 of plan.md)
   const handleAddSampleProject = () => {
@@ -451,9 +490,13 @@ export const App: React.FC = () => {
                 onUpdateCard={(updates) => handleUpdateCard(card.id, updates)}
                 onDeleteCard={handleDeleteCard}
                 onDuplicateCard={handleDuplicateCard}
-                onMoveOrder={(dir) => handleMoveCardOrder(index, dir)}
+                onMoveOrder={(dir) => handleMoveCardOrder(card.id, dir)}
                 isFirst={index === 0}
                 isLast={index === filteredAndSortedCards.length - 1}
+                onNotifyUndo={(msg, action) => {
+                  setUndoToast({ message: msg, action })
+                  setTimeout(() => setUndoToast(null), 6000)
+                }}
               />
             ))}
           </div>
@@ -483,6 +526,35 @@ export const App: React.FC = () => {
         </div>
       )}
 
+      {/* Disaster Recovery Mode Dialog (P0-02) */}
+      {isRecoveryMode && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 rounded-xl p-6 shadow-2xl max-w-md w-full space-y-4 text-xs">
+            <div className="flex items-center gap-2.5 text-amber-600 dark:text-amber-400 font-bold text-sm">
+              <AlertTriangle className="w-5 h-5" />
+              <span>数据异常保护（安全恢复模式）</span>
+            </div>
+            <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+              检测到当前主任务数据文件损坏且无可用历史快照自动恢复。为防止覆盖受损文件，已自动挂起自动保存并进入只读安全模式。请选择：
+            </p>
+            <div className="space-y-2 pt-2">
+              <button
+                onClick={() => setShowSettings(true)}
+                className="w-full flex items-center justify-center gap-2 p-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium"
+              >
+                导入外部备份 JSON 或从历史备份恢复
+              </button>
+              <button
+                onClick={handleInitializeClean}
+                className="w-full flex items-center justify-center gap-2 p-2.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300"
+              >
+                确认全新初始化（新建空白数据）
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Settings Modal */}
       {showSettings && (
         <SettingsModal
@@ -506,23 +578,31 @@ export const App: React.FC = () => {
               URL.revokeObjectURL(url)
             }
           }}
-          onImportData={(json) => {
+          onImportData={async (json) => {
             if (window.electronAPI) {
-              window.electronAPI.storage.importData(json).then((imported) => {
-                setData(imported)
-              })
+              const imported = await window.electronAPI.storage.importData(json)
+              isRemoteUpdate.current = true
+              setData(imported)
+              setIsRecoveryMode(false)
+              setIsLoaded(true)
+              return true
             }
+            return false
           }}
-          onRestoreBackup={(backupName) => {
+          onRestoreBackup={async (backupName) => {
             if (window.electronAPI) {
-              window.electronAPI.storage.restoreBackup(backupName).then((restored) => {
-                setData(restored)
-                alert(`已成功恢复备份 ${backupName}！`)
-              })
+              const restored = await window.electronAPI.storage.restoreBackup(backupName)
+              isRemoteUpdate.current = true
+              setData(restored)
+              setIsRecoveryMode(false)
+              setIsLoaded(true)
+              return true
             }
+            return false
           }}
         />
       )}
     </div>
   )
 }
+

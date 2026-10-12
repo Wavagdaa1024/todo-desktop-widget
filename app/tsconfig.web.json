@@ -25,6 +25,8 @@
   "include": [
     "src/renderer/src/**/*",
     "src/preload/*.d.ts",
-    "tests/**/*"
+    "tests/domain.test.ts",
+    "tests/storage-domain.test.ts"
   ]
 }
+

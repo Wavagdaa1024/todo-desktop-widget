@@ -29,18 +29,15 @@ export const WidgetView: React.FC = () => {
     }
   }, [])
 
-  // Listen for real-time storage updates
+  // Listen for real-time storage updates (event-driven IPC, zero polling)
   useEffect(() => {
-    const handleStorageChange = () => {
-      if (window.electronAPI) {
-        window.electronAPI.storage.getInitialData().then((res) => {
-          setCards(res.data.cards)
-        })
-      }
-    }
-    const interval = setInterval(handleStorageChange, 3000)
-    return () => clearInterval(interval)
+    if (!window.electronAPI?.storage?.onDataUpdated) return
+    const unsubscribe = window.electronAPI.storage.onDataUpdated((updatedData) => {
+      setCards(updatedData.cards)
+    })
+    return () => unsubscribe()
   }, [])
+
 
   // Esc key closes widget
   useEffect(() => {

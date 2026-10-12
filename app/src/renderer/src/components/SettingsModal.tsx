@@ -16,8 +16,8 @@ interface SettingsModalProps {
   onUpdateSettings: (updates: Partial<AppSettings>) => void
   onClose: () => void
   onExportData: () => void
-  onImportData: (json: string) => void
-  onRestoreBackup: (backupName: string) => void
+  onImportData: (json: string) => Promise<boolean>
+  onRestoreBackup: (backupName: string) => Promise<boolean>
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -43,19 +43,35 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const file = e.target.files?.[0]
     if (!file) return
 
+    if (!confirm('导入将覆盖当前所有任务数据，是否确认继续？（系统将自动为您保存导入前安全备份）')) {
+      e.target.value = ''
+      return
+    }
+
     const reader = new FileReader()
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
         const text = event.target?.result as string
-        onImportData(text)
-        setImportError('')
-        alert('数据导入成功！已自动为您生成导入前安全备份。')
+        const success = await onImportData(text)
+        if (success) {
+          setImportError('')
+          alert('数据导入成功！已自动为您生成导入前安全备份。')
+          if (window.electronAPI) {
+            const updated = await window.electronAPI.storage.getBackups()
+            setBackups(updated)
+          }
+        } else {
+          setImportError('导入失败：数据未能成功保存到磁盘')
+        }
       } catch (err: any) {
         setImportError(err.message || '文件格式不合法')
+      } finally {
+        e.target.value = ''
       }
     }
     reader.readAsText(file)
   }
+
 
   const handleOpenUserDataFolder = () => {
     window.electronAPI?.system?.openUserDataFolder()
@@ -307,15 +323,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           </span>
                         </div>
                         <button
-                          onClick={() => {
+                          onClick={async () => {
                             if (confirm(`确定要从备份 ${b.name} 恢复吗？当前数据将被覆盖。`)) {
-                              onRestoreBackup(b.name)
+                              try {
+                                const success = await onRestoreBackup(b.name)
+                                if (success) {
+                                  alert(`已成功从备份 ${b.name} 恢复数据！`)
+                                } else {
+                                  alert('恢复备份失败：写入时发生错误')
+                                }
+                              } catch (err: any) {
+                                alert(`恢复备份失败: ${err.message || '未知错误'}`)
+                              }
                             }
                           }}
                           className="px-2 py-0.5 text-blue-600 hover:text-blue-800 dark:text-blue-400 rounded hover:bg-blue-50 dark:hover:bg-blue-950/40"
                         >
                           恢复此备份
                         </button>
+
                       </div>
                     ))}
                   </div>

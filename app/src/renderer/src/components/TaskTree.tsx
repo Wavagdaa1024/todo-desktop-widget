@@ -64,6 +64,8 @@ const TaskRow: React.FC<TaskRowProps> = ({
   const [collapsed, setCollapsed] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editTitle, setEditTitle] = useState(task.title)
+  const [editDueDate, setEditDueDate] = useState(task.dueDate || '')
+  const [editNotes, setEditNotes] = useState(task.notes || '')
   const [showAddSubtask, setShowAddSubtask] = useState(false)
   const [subtaskTitle, setSubtaskTitle] = useState('')
   const [isComposing, setIsComposing] = useState(false)
@@ -98,8 +100,12 @@ const TaskRow: React.FC<TaskRowProps> = ({
 
   const handleSaveEdit = () => {
     const trimmed = editTitle.trim()
-    if (trimmed && trimmed !== task.title) {
-      onUpdateTask(task.id, { title: trimmed })
+    if (trimmed) {
+      onUpdateTask(task.id, {
+        title: trimmed,
+        dueDate: editDueDate || undefined,
+        notes: editNotes.trim() || undefined
+      })
     }
     setIsEditing(false)
   }
@@ -111,6 +117,8 @@ const TaskRow: React.FC<TaskRowProps> = ({
       handleSaveEdit()
     } else if (e.key === 'Escape') {
       setEditTitle(task.title)
+      setEditDueDate(task.dueDate || '')
+      setEditNotes(task.notes || '')
       setIsEditing(false)
     }
   }
@@ -171,34 +179,69 @@ const TaskRow: React.FC<TaskRowProps> = ({
 
         {/* Title / Inline Edit */}
         {isEditing ? (
-          <div className="flex-1 flex items-center gap-1">
-            <input
-              ref={editInputRef}
-              type="text"
-              value={editTitle}
-              onChange={(e) => setEditTitle(e.target.value)}
-              onCompositionStart={() => setIsComposing(true)}
-              onCompositionEnd={() => setIsComposing(false)}
-              onKeyDown={handleKeyDownEdit}
-              className="flex-1 px-2 py-0.5 bg-white dark:bg-slate-800 border border-blue-500 rounded text-xs focus:outline-none"
-            />
-            <button
-              onClick={handleSaveEdit}
-              className="p-1 text-emerald-600 hover:bg-emerald-50 rounded"
-              title="保存"
-            >
-              <Check className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => {
-                setEditTitle(task.title)
-                setIsEditing(false)
-              }}
-              className="p-1 text-slate-400 hover:bg-slate-100 rounded"
-              title="取消"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
+          <div className="flex-1 flex flex-col gap-1.5 py-1 bg-slate-50 dark:bg-slate-800/80 p-2 rounded-lg border border-blue-400">
+            <div className="flex items-center gap-1">
+              <input
+                ref={editInputRef}
+                type="text"
+                placeholder="任务名称..."
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                onCompositionStart={() => setIsComposing(true)}
+                onCompositionEnd={() => setIsComposing(false)}
+                onKeyDown={handleKeyDownEdit}
+                className="flex-1 px-2 py-0.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded text-xs focus:outline-none"
+              />
+              <button
+                onClick={handleSaveEdit}
+                className="p-1 text-emerald-600 hover:bg-emerald-50 rounded"
+                title="保存"
+              >
+                <Check className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => {
+                  setEditTitle(task.title)
+                  setEditDueDate(task.dueDate || '')
+                  setEditNotes(task.notes || '')
+                  setIsEditing(false)
+                }}
+                className="p-1 text-slate-400 hover:bg-slate-100 rounded"
+                title="取消"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="flex items-center gap-2 text-[11px]">
+              <div className="flex items-center gap-1">
+                <span className="text-slate-400">截止:</span>
+                <input
+                  type="date"
+                  value={editDueDate}
+                  onChange={(e) => setEditDueDate(e.target.value)}
+                  className="px-1.5 py-0.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded text-[11px]"
+                />
+                {editDueDate && (
+                  <button
+                    onClick={() => setEditDueDate('')}
+                    className="text-slate-400 hover:text-slate-600 text-[10px]"
+                  >
+                    清除
+                  </button>
+                )}
+              </div>
+              <div className="flex-1 flex items-center gap-1">
+                <input
+                  type="text"
+                  placeholder="备注说明..."
+                  value={editNotes}
+                  onChange={(e) => setEditNotes(e.target.value)}
+                  onCompositionStart={() => setIsComposing(true)}
+                  onCompositionEnd={() => setIsComposing(false)}
+                  className="w-full px-1.5 py-0.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded text-[11px]"
+                />
+              </div>
+            </div>
           </div>
         ) : (
           <div
@@ -214,6 +257,13 @@ const TaskRow: React.FC<TaskRowProps> = ({
             >
               {task.title}
             </span>
+
+            {/* Subtask notes preview */}
+            {task.notes && (
+              <span className="shrink-0 text-[10px] text-slate-400 dark:text-slate-500 italic truncate max-w-[120px]">
+                ({task.notes})
+              </span>
+            )}
 
             {/* Parent subtask progress pill */}
             {progress && (
@@ -257,7 +307,14 @@ const TaskRow: React.FC<TaskRowProps> = ({
               <Edit2 className="w-3.5 h-3.5" />
             </button>
             <button
-              onClick={() => onDeleteTask(task.id)}
+              onClick={() => {
+                if (task.children && task.children.length > 0) {
+                  if (!confirm(`该任务包含 ${task.children.length} 个子任务，确定要删除整棵子任务树吗？`)) {
+                    return
+                  }
+                }
+                onDeleteTask(task.id)
+              }}
               className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 rounded hover:bg-slate-200/50 dark:hover:bg-slate-700"
               title="删除任务"
             >
@@ -266,6 +323,7 @@ const TaskRow: React.FC<TaskRowProps> = ({
           </div>
         )}
       </div>
+
 
       {/* Subtask Input Field */}
       {showAddSubtask && (

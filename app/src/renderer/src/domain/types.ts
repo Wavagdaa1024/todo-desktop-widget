@@ -65,6 +65,13 @@ export interface AppData {
   lastModified: string
 }
 
+export interface StorageInitialResult {
+  data: AppData
+  recoveredFromBackup?: boolean
+  isCorrupted?: boolean
+  recoveryRequired?: boolean
+}
+
 // Zod Schemas for Runtime Validation
 export const TaskItemSchema: z.ZodType<TaskItem> = z.lazy(() =>
   z.object({

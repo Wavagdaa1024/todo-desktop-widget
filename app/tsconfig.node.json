@@ -16,6 +16,8 @@
     "vitest.config.*",
     "src/main/**/*",
     "src/preload/**/*",
-    "src/renderer/src/domain/**/*"
+    "src/renderer/src/domain/**/*",
+    "tests/**/*"
   ]
 }
+
