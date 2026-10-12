@@ -5,7 +5,7 @@ import { TaskCard } from './components/TaskCard'
 import { SettingsModal } from './components/SettingsModal'
 import { isCardOverdue } from './domain/date'
 import { reorderCards } from './domain/calculator'
-import { Sparkles, Plus, Undo2, AlertTriangle } from 'lucide-react'
+import { Plus, Undo2, AlertTriangle, CheckCircle2 } from 'lucide-react'
 
 export const App: React.FC = () => {
   const [data, setData] = useState<AppData>({
@@ -577,32 +577,31 @@ export const App: React.FC = () => {
       <main className="flex-1 p-6 max-w-7xl w-full mx-auto">
         {data.cards.length === 0 ? (
           /* Empty State */
-          <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
-            <div className="w-16 h-16 rounded-2xl bg-blue-100 dark:bg-blue-950/60 text-blue-600 flex items-center justify-center shadow-inner">
-              <Plus className="w-8 h-8" />
+          <div className="flex flex-col items-center justify-center py-24 text-center space-y-4">
+            <div className="w-14 h-14 rounded-2xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 flex items-center justify-center border border-blue-100 dark:border-blue-900/60 shadow-sm">
+              <CheckCircle2 className="w-7 h-7" />
             </div>
             <div className="space-y-1">
-              <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">
-                创建第一个任务卡片
+              <h2 className="text-base font-bold text-slate-800 dark:text-slate-100">
+                还没有任务卡片
               </h2>
-              <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                点击上方「+ 新增卡片」开始规划你的工作，或一键导入标准示例项目体验三层任务管理与 AI 协同工作流。
+              <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
+                创建任务后，这里会显示任务清单与 AI 协同工作状态。
               </p>
             </div>
             <div className="flex items-center gap-3 pt-2">
               <button
                 onClick={handleAddNewCard}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium text-xs rounded-xl shadow-md shadow-blue-500/20"
+                className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-medium text-xs rounded-xl shadow-sm shadow-blue-500/20 transition-all"
               >
                 <Plus className="w-4 h-4" />
-                <span>新建卡片</span>
+                <span>+ 新建任务卡片</span>
               </button>
               <button
                 onClick={handleAddSampleProject}
-                className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-medium text-xs rounded-xl"
+                className="text-xs text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 hover:underline px-2 py-1"
               >
-                <Sparkles className="w-4 h-4 text-blue-600" />
-                <span>载入示例项目 (FMU + MuJoCo)</span>
+                载入演示项目 (FMU + MuJoCo)
               </button>
             </div>
           </div>

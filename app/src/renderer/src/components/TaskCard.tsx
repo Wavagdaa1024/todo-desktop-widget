@@ -11,7 +11,7 @@ import {
 } from '../domain/calculator'
 import { formatDueDateBadge, isCardOverdue } from '../domain/date'
 import { TaskTree } from './TaskTree'
-import { AiWorkPanel } from './AiWorkPanel'
+import { TaskDetailModal } from './TaskDetailModal'
 import {
   ChevronDown,
   ChevronRight,
@@ -23,9 +23,12 @@ import {
   ArrowUp,
   ArrowDown,
   GripVertical,
-  Calendar
+  Calendar,
+  Plus,
+  Clock,
+  FileText,
+  Check
 } from 'lucide-react'
-
 
 interface TaskCardProps {
   card: Card
@@ -56,17 +59,19 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   const [titleDraft, setTitleDraft] = useState(card.title)
   const [isComposing, setIsComposing] = useState(false)
   const [showMenu, setShowMenu] = useState(false)
+  const [showAddTaskInput, setShowAddTaskInput] = useState(false)
   const [newTaskInput, setNewTaskInput] = useState('')
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showDoneConfirm, setShowDoneConfirm] = useState(false)
   const [showDetailModal, setShowDetailModal] = useState(false)
-  const [cardDueDateDraft, setCardDueDateDraft] = useState(card.dueDate || '')
-  const [cardCategoryDraft, setCardCategoryDraft] = useState(card.category || '')
-  const [cardDescDraft, setCardDescDraft] = useState(card.description || '')
+  const [detailModalTab, setDetailModalTab] = useState<'details' | 'ai' | 'history'>('details')
   const [isDragOver, setIsDragOver] = useState(false)
-  const isManualSort = !currentSort || currentSort === 'MANUAL'
+  const [copied, setCopied] = useState(false)
+  const [elapsedMinutes, setElapsedMinutes] = useState(0)
 
+  const isManualSort = !currentSort || currentSort === 'MANUAL'
   const titleInputRef = useRef<HTMLInputElement>(null)
+  const addTaskInputRef = useRef<HTMLInputElement>(null)
   const progress = calculateProgress(card.tasks)
   const isOverdue = isCardOverdue(card)
   const dateBadge = formatDueDateBadge(card.dueDate, card.status === 'DONE')
@@ -77,6 +82,24 @@ export const TaskCard: React.FC<TaskCardProps> = ({
       titleInputRef.current.select()
     }
   }, [isEditingTitle])
+
+  // Track live elapsed minutes when AI_RUNNING
+  useEffect(() => {
+    if (card.status !== 'AI_RUNNING' || !card.aiWork.activeStartTime) {
+      setElapsedMinutes(0)
+      return
+    }
+
+    const calcElapsed = () => {
+      const start = new Date(card.aiWork.activeStartTime!).getTime()
+      const diffMs = Date.now() - start
+      setElapsedMinutes(Math.max(0, Math.floor(diffMs / 60000)))
+    }
+
+    calcElapsed()
+    const timer = setInterval(calcElapsed, 30000)
+    return () => clearInterval(timer)
+  }, [card.status, card.aiWork.activeStartTime])
 
   const handleSaveTitle = () => {
     const trimmed = titleDraft.trim()
@@ -120,7 +143,6 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   }
 
   const handleConfirmBatchDone = () => {
-    // Complete all leaves
     function completeAll(tasks: TaskItem[]): TaskItem[] {
       return tasks.map((t) => ({
         ...t,
@@ -140,31 +162,34 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   const handleToggleTask = (taskId: string) => {
     const { updatedTasks } = toggleTask(card.tasks, taskId)
     const reconciled = reconcileCardStatus(card, updatedTasks)
-    onUpdateCard({ tasks: reconciled.tasks, status: reconciled.status })
+    onUpdateCard({
+      tasks: reconciled.tasks,
+      status: reconciled.status
+    })
   }
 
   const handleAddTopTask = () => {
     const trimmed = newTaskInput.trim()
     if (!trimmed) return
-    const updated = addTaskToParent(card.tasks, null, trimmed)
-    const reconciled = reconcileCardStatus(card, updated)
+    const nextTasks = addTaskToParent(card.tasks, null, trimmed)
+    const reconciled = reconcileCardStatus(card, nextTasks)
     onUpdateCard({ tasks: reconciled.tasks, status: reconciled.status })
     setNewTaskInput('')
+    setShowAddTaskInput(false)
   }
 
-  const handleAddSubtask = (parentId: string, title: string, dueDate?: string) => {
-    const updated = addTaskToParent(card.tasks, parentId, title, { dueDate })
-    const reconciled = reconcileCardStatus(card, updated)
+  const handleAddSubtask = (parentId: string, title: string) => {
+    const updatedTasks = addTaskToParent(card.tasks, parentId, title.trim())
+    const reconciled = reconcileCardStatus(card, updatedTasks)
     onUpdateCard({ tasks: reconciled.tasks, status: reconciled.status })
   }
 
   const handleUpdateTask = (
     taskId: string,
-    updates: Partial<Pick<TaskItem, 'title' | 'notes' | 'dueDate'>>
+    updates: Partial<Pick<TaskItem, 'title' | 'dueDate' | 'notes'>>
   ) => {
-    const updated = updateTaskItem(card.tasks, taskId, updates)
-    const reconciled = reconcileCardStatus(card, updated)
-    onUpdateCard({ tasks: reconciled.tasks, status: reconciled.status })
+    const updatedTasks = updateTaskItem(card.tasks, taskId, updates)
+    onUpdateCard({ tasks: updatedTasks })
   }
 
   const handleDeleteTask = (taskId: string) => {
@@ -175,23 +200,12 @@ export const TaskCard: React.FC<TaskCardProps> = ({
 
     if (onNotifyUndo) {
       onNotifyUndo(`已删除任务「${deletedTask.title}」`, () => {
-        // P1-02: Non-destructive restoration of only this task without rolling back other tasks
         onUpdateCard({
           tasks: restoreTaskItem(card.tasks, deletedTask, parentId, originalIndex)
         })
       })
     }
   }
-
-  const handleSaveCardDetails = () => {
-    onUpdateCard({
-      dueDate: cardDueDateDraft || undefined,
-      category: cardCategoryDraft.trim() || undefined,
-      description: cardDescDraft.trim() || undefined
-    })
-    setShowDetailModal(false)
-  }
-
 
   const handleAddProgressLog = (log: Omit<ProgressLog, 'id' | 'timestamp'>) => {
     const newLogItem: ProgressLog = {
@@ -208,6 +222,57 @@ export const TaskCard: React.FC<TaskCardProps> = ({
         history: [...card.aiWork.history, newLogItem]
       }
     })
+  }
+
+  const handleRestartTimer = () => {
+    onUpdateCard({
+      aiWork: {
+        ...card.aiWork,
+        activeStartTime: new Date().toISOString()
+      }
+    })
+  }
+
+  const handleCopyPrompt = async () => {
+    let taskTreeText = ''
+    function formatTasks(list: typeof card.tasks, indent = ''): void {
+      for (const t of list) {
+        taskTreeText += `${indent}- [${t.completed ? 'x' : ' '}] ${t.title}\n`
+        if (t.children && t.children.length > 0) {
+          formatTasks(t.children, indent + '  ')
+        }
+      }
+    }
+    formatTasks(card.tasks)
+
+    const promptText = `【任务卡片】${card.title}
+分类: ${card.category || '未分类'}
+负责人: ${card.owner}
+状态: ${card.status}
+截止日期: ${card.dueDate || '无'}
+完成进度: ${progress.doneLeaves}/${progress.totalLeaves} (${progress.percentage}%)
+
+【当前工作概要】
+正在处理: ${card.aiWork.currentTaskDescription || '未填写'}
+最近进展: ${card.aiWork.recentProgress || '无'}
+目前阻塞: ${card.aiWork.currentBlockers || '无'}
+下一步行动: ${card.aiWork.nextAction || '未填写'}
+
+【项目背景与描述】
+${card.description || '无'}
+
+【子任务清单】
+${taskTreeText || '(暂无子任务)'}
+`
+
+    if (window.electronAPI?.system?.copyText) {
+      await window.electronAPI.system.copyText(promptText)
+    } else {
+      await navigator.clipboard.writeText(promptText)
+    }
+
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }
 
   return (
@@ -229,7 +294,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
           onDropOrder(sourceId, card.id)
         }
       }}
-      className={`group relative flex flex-col bg-white dark:bg-slate-900 border rounded-xl shadow-sm transition-all hover:shadow-md ${
+      className={`group relative flex flex-col bg-white dark:bg-slate-900 border rounded-xl shadow-sm transition-all hover:shadow-md w-full max-w-[420px] ${
         isDragOver ? 'ring-2 ring-blue-500 shadow-lg scale-[1.01]' : ''
       } ${
         isOverdue
@@ -244,11 +309,11 @@ export const TaskCard: React.FC<TaskCardProps> = ({
       }`}
     >
       {/* Top Header Row */}
-      <div className="p-3.5 pb-2">
+      <div className="p-3.5 pb-2.5">
         <div className="flex items-start justify-between gap-2">
           {/* Left: Reorder handle & Expand button & Title */}
           <div className="flex items-start gap-1.5 flex-1 min-w-0">
-            {/* Reorder Buttons & Grip Handle (P1-01) */}
+            {/* Reorder Buttons & Grip Handle */}
             <div
               draggable={isManualSort}
               onDragStart={(e) => {
@@ -348,7 +413,40 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             </button>
 
             {showMenu && (
-              <div className="absolute right-0 top-6 z-20 w-40 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg py-1 text-xs">
+              <div className="absolute right-0 top-6 z-20 w-44 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg py-1 text-xs">
+                <button
+                  onClick={() => {
+                    setDetailModalTab('details')
+                    setShowDetailModal(true)
+                    setShowMenu(false)
+                  }}
+                  className="w-full text-left px-3 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5"
+                >
+                  <Calendar className="w-3.5 h-3.5 text-blue-500" />
+                  <span>编辑详情/截止日</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setDetailModalTab('history')
+                    setShowDetailModal(true)
+                    setShowMenu(false)
+                  }}
+                  className="w-full text-left px-3 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5"
+                >
+                  <FileText className="w-3.5 h-3.5 text-indigo-500" />
+                  <span>登记工作进展/历史</span>
+                </button>
+                <button
+                  onClick={() => {
+                    handleCopyPrompt()
+                    setShowMenu(false)
+                  }}
+                  className="w-full text-left px-3 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5"
+                >
+                  <Copy className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>复制任务 Prompt</span>
+                </button>
+                <div className="my-1 border-t border-slate-100 dark:border-slate-700" />
                 <button
                   onClick={() => {
                     setIsEditingTitle(true)
@@ -357,19 +455,6 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                   className="w-full text-left px-3 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200"
                 >
                   重命名卡片
-                </button>
-                <button
-                  onClick={() => {
-                    setCardDueDateDraft(card.dueDate || '')
-                    setCardCategoryDraft(card.category || '')
-                    setCardDescDraft(card.description || '')
-                    setShowDetailModal(true)
-                    setShowMenu(false)
-                  }}
-                  className="w-full text-left px-3 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5"
-                >
-                  <Calendar className="w-3.5 h-3.5 text-blue-500" />
-                  <span>编辑详情/截止日</span>
                 </button>
                 <button
                   onClick={() => {
@@ -397,15 +482,14 @@ export const TaskCard: React.FC<TaskCardProps> = ({
           </div>
         </div>
 
-
-        {/* Status & Owner & Progress Meta Row (Visible even when folded) */}
+        {/* Status & Owner & Due Date Meta Row */}
         <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
           {/* Status selector */}
           <div className="flex items-center gap-2">
             <select
               value={card.status}
               onChange={(e) => handleStatusChange(e.target.value as CardStatus)}
-              className={`px-2 py-0.5 rounded font-medium text-xs border focus:outline-none ${
+              className={`px-2 py-0.5 rounded font-medium text-xs border focus:outline-none transition-colors ${
                 card.status === 'TODO'
                   ? 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
                   : card.status === 'AI_RUNNING'
@@ -441,9 +525,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
           {dateBadge && (
             <button
               onClick={() => {
-                setCardDueDateDraft(card.dueDate || '')
-                setCardCategoryDraft(card.category || '')
-                setCardDescDraft(card.description || '')
+                setDetailModalTab('details')
                 setShowDetailModal(true)
               }}
               title="点击修改卡片截止日期与详情"
@@ -460,7 +542,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
           )}
         </div>
 
-        {/* Progress bar (Visible even when folded) */}
+        {/* Progress bar line */}
         <div className="mt-2">
           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mb-1 font-mono">
             <span>
@@ -481,45 +563,35 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             />
           </div>
         </div>
+
+        {/* High-frequency scanning lines: current task & next action (max 1 line each) */}
+        {(card.aiWork?.currentTaskDescription || card.aiWork?.nextAction) && (
+          <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800/60 space-y-0.5 text-[11px]">
+            {card.aiWork.currentTaskDescription && (
+              <div className="truncate flex items-center gap-1.5 text-slate-600 dark:text-slate-300">
+                <span className="text-slate-400 dark:text-slate-500 shrink-0 font-medium">当前:</span>
+                <span className="truncate">{card.aiWork.currentTaskDescription}</span>
+              </div>
+            )}
+            {card.aiWork.nextAction && (
+              <div className="truncate flex items-center gap-1.5 text-slate-600 dark:text-slate-300">
+                <span className="text-slate-400 dark:text-slate-500 shrink-0 font-medium">下一步:</span>
+                <span className="truncate">{card.aiWork.nextAction}</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Expanded Body: Tasks & AI Info */}
+      {/* Expanded Body: Tasks & Operations */}
       {!card.collapsed && (
-        <div className="px-3.5 pb-3 pt-1 border-t border-slate-100 dark:border-slate-800/80">
+        <div className="px-3.5 pb-3 pt-2 border-t border-slate-100 dark:border-slate-800/80 space-y-2">
           {/* Optional Card Description */}
           {card.description && (
-            <div className="text-xs text-slate-500 dark:text-slate-400 mb-2 py-1 italic">
+            <div className="text-xs text-slate-500 dark:text-slate-400 pb-1 italic">
               {card.description}
             </div>
           )}
-
-          {/* Quick Add Top-level Task with IME Composition Guard (P2-01) */}
-          <div className="flex items-center gap-1.5 py-1.5 mb-1">
-            <input
-              type="text"
-              value={newTaskInput}
-              onChange={(e) => setNewTaskInput(e.target.value)}
-              onCompositionStart={() => setIsComposing(true)}
-              onCompositionEnd={() => setIsComposing(false)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !isComposing && !e.nativeEvent.isComposing) {
-                  e.preventDefault()
-                  handleAddTopTask()
-                }
-              }}
-              placeholder="+ 添加新任务 (按 Enter 保存)..."
-              className="flex-1 px-2.5 py-1 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-800 dark:text-slate-200"
-            />
-            {newTaskInput.trim() && (
-              <button
-                onClick={handleAddTopTask}
-                className="px-2.5 py-1 bg-blue-600 text-white rounded-md text-xs hover:bg-blue-700 font-medium"
-              >
-                添加
-              </button>
-            )}
-          </div>
-
 
           {/* Task Tree */}
           {card.tasks.length > 0 ? (
@@ -531,17 +603,100 @@ export const TaskCard: React.FC<TaskCardProps> = ({
               onDeleteTask={handleDeleteTask}
             />
           ) : (
-            <p className="text-[11px] text-slate-400 py-2 text-center">
-              暂无子任务，在上方输入可直接添加
+            <p className="text-[11px] text-slate-400 py-1 text-center">
+              暂无子任务，点击下方添加
             </p>
           )}
 
-          {/* AI Work & Progress History Panel */}
-          <AiWorkPanel
-            card={card}
-            onUpdateCard={onUpdateCard}
-            onAddProgressLog={handleAddProgressLog}
-          />
+          {/* Quick Add Top-level Task Button or Input */}
+          {showAddTaskInput ? (
+            <div className="flex items-center gap-1.5 pt-1">
+              <input
+                ref={addTaskInputRef}
+                type="text"
+                value={newTaskInput}
+                onChange={(e) => setNewTaskInput(e.target.value)}
+                onCompositionStart={() => setIsComposing(true)}
+                onCompositionEnd={() => setIsComposing(false)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !isComposing && !e.nativeEvent.isComposing) {
+                    e.preventDefault()
+                    handleAddTopTask()
+                  } else if (e.key === 'Escape') {
+                    setShowAddTaskInput(false)
+                    setNewTaskInput('')
+                  }
+                }}
+                onBlur={() => {
+                  if (!newTaskInput.trim()) {
+                    setShowAddTaskInput(false)
+                  }
+                }}
+                placeholder="输入新任务内容 (按 Enter 保存，Esc 取消)..."
+                className="flex-1 px-2.5 py-1 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-800 dark:text-slate-200"
+              />
+              <button
+                onClick={handleAddTopTask}
+                className="px-2.5 py-1 bg-blue-600 text-white rounded-md text-xs hover:bg-blue-700 font-medium"
+              >
+                添加
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => {
+                setShowAddTaskInput(true)
+                setTimeout(() => addTaskInputRef.current?.focus(), 50)
+              }}
+              className="flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 py-1 transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>+ 添加任务</span>
+            </button>
+          )}
+
+          {/* AI Timer if AI_RUNNING */}
+          {card.status === 'AI_RUNNING' && (
+            <div className="flex items-center justify-between p-2 rounded-lg bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200/80 dark:border-indigo-800/50 text-xs">
+              <div className="flex items-center gap-1.5 text-indigo-700 dark:text-indigo-300 font-medium">
+                <Clock className="w-3.5 h-3.5 animate-pulse" />
+                <span>AI 执行中：已等待 {elapsedMinutes} 分钟</span>
+              </div>
+              <button
+                onClick={handleRestartTimer}
+                className="text-[11px] text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-200 underline"
+              >
+                重启计时
+              </button>
+            </div>
+          )}
+
+          {/* Action Bar at bottom of card */}
+          <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs">
+            <button
+              onClick={() => {
+                setDetailModalTab('details')
+                setShowDetailModal(true)
+              }}
+              className="flex items-center gap-1 text-slate-600 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors py-0.5"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>详情与进展...</span>
+            </button>
+
+            <button
+              onClick={handleCopyPrompt}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded transition-all text-[11px] ${
+                copied
+                  ? 'text-emerald-600 font-medium'
+                  : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+              }`}
+              title="复制任务 Prompt"
+            >
+              {copied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+              <span>{copied ? '已复制 Prompt' : '复制 Prompt'}</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -610,83 +765,16 @@ export const TaskCard: React.FC<TaskCardProps> = ({
         </div>
       )}
 
-      {/* Card Detail Edit Modal (P1-03) */}
+      {/* Comprehensive Card Detail Edit Modal */}
       {showDetailModal && (
-        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 shadow-xl max-w-sm w-full text-xs space-y-4">
-            <h4 className="font-bold text-sm text-slate-800 dark:text-slate-100 flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-blue-600" />
-              <span>编辑卡片详情与截止日期</span>
-            </h4>
-
-            <div className="space-y-3">
-              <div>
-                <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-400 mb-1">
-                  截止日期 (本地日历 YYYY-MM-DD)
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="date"
-                    value={cardDueDateDraft}
-                    onChange={(e) => setCardDueDateDraft(e.target.value)}
-                    className="flex-1 px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200"
-                  />
-                  {cardDueDateDraft && (
-                    <button
-                      onClick={() => setCardDueDateDraft('')}
-                      className="px-2 py-1 text-slate-500 hover:text-slate-700 text-xs border border-slate-200 dark:border-slate-700 rounded-lg"
-                    >
-                      清除
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-400 mb-1">
-                  项目分类
-                </label>
-                <input
-                  type="text"
-                  placeholder="如：控制调试、联合仿真、技术文档..."
-                  value={cardCategoryDraft}
-                  onChange={(e) => setCardCategoryDraft(e.target.value)}
-                  className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-400 mb-1">
-                  项目描述 / 背景目标
-                </label>
-                <textarea
-                  rows={3}
-                  placeholder="简述该项目的主要任务目标与交付范围..."
-                  value={cardDescDraft}
-                  onChange={(e) => setCardDescDraft(e.target.value)}
-                  className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 resize-none"
-                />
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
-              <button
-                onClick={() => setShowDetailModal(false)}
-                className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200"
-              >
-                取消
-              </button>
-              <button
-                onClick={handleSaveCardDetails}
-                className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium"
-              >
-                保存详情
-              </button>
-            </div>
-          </div>
-        </div>
+        <TaskDetailModal
+          card={card}
+          initialTab={detailModalTab}
+          onClose={() => setShowDetailModal(false)}
+          onUpdateCard={onUpdateCard}
+          onAddProgressLog={handleAddProgressLog}
+        />
       )}
     </div>
   )
 }
-
