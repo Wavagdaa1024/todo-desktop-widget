@@ -46,11 +46,12 @@ function getPreloadPath(): string {
   return join(__dirname, '../preload/index.js')
 }
 
-function calculateWidgetPosition(): { x: number; y: number } {
-  const primaryDisplay = screen.getPrimaryDisplay()
-  const { x: waX, y: waY, width: waW, height: waH } = primaryDisplay.workArea
-  const widgetWidth = 360
-  const widgetHeight = 490
+function calculateWidgetPosition(height = 420): { x: number; y: number } {
+  const point = screen.getCursorScreenPoint()
+  const display = screen.getDisplayNearestPoint(point) || screen.getPrimaryDisplay()
+  const { x: waX, y: waY, width: waW, height: waH } = display.workArea
+  const widgetWidth = 350
+  const widgetHeight = height
   const x = Math.round(waX + waW - widgetWidth - 16)
   const y = Math.round(waY + waH - widgetHeight - 16)
   return { x, y }
@@ -121,10 +122,10 @@ function createMainWindow(): void {
   }
 }
 
-function createWidgetWindow(): void {
-  const { x, y } = calculateWidgetPosition()
-  const widgetWidth = 360
-  const widgetHeight = 490
+function createWidgetWindow(height = 420): void {
+  const { x, y } = calculateWidgetPosition(height)
+  const widgetWidth = 350
+  const widgetHeight = height
 
   widgetWindow = new BrowserWindow({
     width: widgetWidth,
@@ -173,7 +174,8 @@ function toggleWidgetWindow(): void {
   if (widgetWindow.isVisible()) {
     widgetWindow.hide()
   } else {
-    const { x, y } = calculateWidgetPosition()
+    const [, currentH] = widgetWindow.getSize()
+    const { x, y } = calculateWidgetPosition(currentH)
     widgetWindow.setPosition(x, y)
     widgetWindow.show()
     widgetWindow.focus()
@@ -469,6 +471,17 @@ ipcMain.on('window:closeWidget', () => {
 ipcMain.on('window:setWidgetPin', (_, pinned: boolean) => {
   isWidgetPinned = pinned
   widgetWindow?.setAlwaysOnTop(pinned)
+})
+
+ipcMain.on('window:setWidgetHeight', (_, height: number) => {
+  if (widgetWindow && !widgetWindow.isDestroyed()) {
+    const clampedHeight = Math.max(180, Math.min(height, 520))
+    const [currX, currY] = widgetWindow.getPosition()
+    const [, currH] = widgetWindow.getSize()
+    const newY = currY + (currH - clampedHeight)
+    widgetWindow.setSize(350, clampedHeight)
+    widgetWindow.setPosition(currX, newY)
+  }
 })
 
 

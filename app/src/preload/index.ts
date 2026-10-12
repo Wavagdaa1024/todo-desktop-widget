@@ -22,6 +22,7 @@ export interface IElectronAPI {
     openMainBoard: () => void
     closeWidget: () => void
     setWidgetPin: (pinned: boolean) => void
+    setWidgetHeight: (height: number) => void
   }
   system: {
     setAutoStart: (enable: boolean) => Promise<boolean>
@@ -60,7 +61,8 @@ const api: IElectronAPI = {
     setAlwaysOnTop: (alwaysOnTop: boolean) => ipcRenderer.send('window:setAlwaysOnTop', alwaysOnTop),
     openMainBoard: () => ipcRenderer.send('window:openMainBoard'),
     closeWidget: () => ipcRenderer.send('window:closeWidget'),
-    setWidgetPin: (pinned: boolean) => ipcRenderer.send('window:setWidgetPin', pinned)
+    setWidgetPin: (pinned: boolean) => ipcRenderer.send('window:setWidgetPin', pinned),
+    setWidgetHeight: (height: number) => ipcRenderer.send('window:setWidgetHeight', height)
   },
   system: {
     setAutoStart: (enable: boolean) => ipcRenderer.invoke('system:setAutoStart', enable),
