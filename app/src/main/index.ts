@@ -1,12 +1,15 @@
-import { app, shell, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, clipboard } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, clipboard, screen } from 'electron'
 import { join } from 'path'
+import { existsSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
 import { StorageService } from './storage'
 import { AppData, AppSettings } from '../renderer/src/domain/types'
 
 let mainWindow: BrowserWindow | null = null
+let widgetWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+let isWidgetPinned = false
 let storageService: StorageService
 let currentSettings: AppSettings
 
@@ -16,11 +19,7 @@ if (!gotTheLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      if (!mainWindow.isVisible()) mainWindow.show()
-      mainWindow.focus()
-    }
+    toggleWidgetWindow()
   })
 }
 
@@ -28,15 +27,13 @@ function getIconPath(): string {
   return join(__dirname, '../../resources/icon.png')
 }
 
-import { existsSync } from 'fs'
-
 function getPreloadPath(): string {
   const mjsPath = join(__dirname, '../preload/index.mjs')
   if (existsSync(mjsPath)) return mjsPath
   return join(__dirname, '../preload/index.js')
 }
 
-function createWindow(): void {
+function createMainWindow(): void {
   const iconPath = getIconPath()
 
   mainWindow = new BrowserWindow({
@@ -59,14 +56,7 @@ function createWindow(): void {
     mainWindow.setAlwaysOnTop(true)
   }
 
-  mainWindow.on('ready-to-show', () => {
-    if (mainWindow && !process.argv.includes('--hidden')) {
-      mainWindow.show()
-    }
-  })
-
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    // Only open safe external URLs
     try {
       const url = new URL(details.url)
       if (url.protocol === 'http:' || url.protocol === 'https:') {
@@ -86,7 +76,7 @@ function createWindow(): void {
 
       if (!currentSettings.hasSeenTrayNotice) {
         currentSettings.hasSeenTrayNotice = true
-        showNotification('AI Task Board 已在托盘运行', '点击托盘图标可重新打开，右键托盘图标可退出程序。')
+        showNotification('AI Task Board 已在托盘运行', '点击托盘图标可弹出悬浮小面板，右键托盘图标可打开完整工作台或退出。')
       }
     }
   })
@@ -98,18 +88,84 @@ function createWindow(): void {
   }
 }
 
+function createWidgetWindow(): void {
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const { width, height } = primaryDisplay.workAreaSize
+  const widgetWidth = 360
+  const widgetHeight = 490
+  const x = Math.round(width - widgetWidth - 16)
+  const y = Math.round(height - widgetHeight - 16)
+
+  widgetWindow = new BrowserWindow({
+    width: widgetWidth,
+    height: widgetHeight,
+    x,
+    y,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    hasShadow: false,
+    icon: getIconPath(),
+    webPreferences: {
+      preload: getPreloadPath(),
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+
+  widgetWindow.on('blur', () => {
+    if (!isWidgetPinned && widgetWindow?.isVisible()) {
+      widgetWindow.hide()
+    }
+  })
+
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    widgetWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#widget`)
+  } else {
+    widgetWindow.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'widget' })
+  }
+}
+
+function toggleWidgetWindow(): void {
+  if (!widgetWindow) return
+  if (widgetWindow.isVisible()) {
+    widgetWindow.hide()
+  } else {
+    const primaryDisplay = screen.getPrimaryDisplay()
+    const { width, height } = primaryDisplay.workAreaSize
+    const widgetWidth = 360
+    const widgetHeight = 490
+    const x = Math.round(width - widgetWidth - 16)
+    const y = Math.round(height - widgetHeight - 16)
+    widgetWindow.setPosition(x, y)
+    widgetWindow.show()
+    widgetWindow.focus()
+  }
+}
+
 function createTray(): void {
   const iconPath = getIconPath()
   const icon = nativeImage.createFromPath(iconPath)
   tray = new Tray(icon.resize({ width: 16, height: 16 }))
 
-  tray.setToolTip('AI Task Board — 桌面任务工作台')
+  tray.setToolTip('AI Task Board — 桌面悬浮工作台')
 
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: '打开工作台',
+      label: '悬浮小面板 (Widget)',
+      click: (): void => {
+        toggleWidgetWindow()
+      }
+    },
+    {
+      label: '打开完整工作台',
       click: (): void => {
         if (mainWindow) {
+          if (mainWindow.isMinimized()) mainWindow.restore()
           if (!mainWindow.isVisible()) mainWindow.show()
           mainWindow.focus()
         }
@@ -147,15 +203,9 @@ function createTray(): void {
 
   tray.setContextMenu(contextMenu)
 
+  // Single click tray opens/hides floating widget (Figure 1 specification)
   tray.on('click', () => {
-    if (mainWindow) {
-      if (mainWindow.isVisible()) {
-        mainWindow.hide()
-      } else {
-        mainWindow.show()
-        mainWindow.focus()
-      }
-    }
+    toggleWidgetWindow()
   })
 }
 
@@ -202,18 +252,24 @@ app.whenReady().then(() => {
   const initial = storageService.getInitialData()
   currentSettings = initial.data.settings
 
-  // Set Windows App User Model ID
   app.setAppUserModelId('com.aitaskboard.desktop')
 
-  createWindow()
+  createMainWindow()
+  createWidgetWindow()
   createTray()
 
-  // Start periodic monitor (every 1 minute)
+  // By default, pop up the widget window at startup so user immediately sees the Figure 1 widget!
+  setTimeout(() => {
+    toggleWidgetWindow()
+  }, 500)
+
+  // Periodic AI timeout monitor
   setInterval(checkAiTimeouts, 60000)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow()
+      createMainWindow()
+      createWidgetWindow()
     }
   })
 })
@@ -281,6 +337,23 @@ ipcMain.on('window:close', () => {
 
 ipcMain.on('window:setAlwaysOnTop', (_, alwaysOnTop: boolean) => {
   mainWindow?.setAlwaysOnTop(alwaysOnTop)
+})
+
+ipcMain.on('window:openMainBoard', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    if (!mainWindow.isVisible()) mainWindow.show()
+    mainWindow.focus()
+  }
+})
+
+ipcMain.on('window:closeWidget', () => {
+  widgetWindow?.hide()
+})
+
+ipcMain.on('window:setWidgetPin', (_, pinned: boolean) => {
+  isWidgetPinned = pinned
+  widgetWindow?.setAlwaysOnTop(pinned)
 })
 
 // System control IPC
