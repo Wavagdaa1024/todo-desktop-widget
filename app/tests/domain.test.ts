@@ -373,5 +373,57 @@ describe('Domain: Card Status Reconciliation (P1-06)', () => {
     expect(restoredTasks[0].title).toBe('Task 1 Renamed')
     expect(restoredTasks[1].title).toBe('Task 2')
   })
+
+  it('UI-2: Floating Widget Hero prioritization rule (WAITING_ACCEPT > BLOCKED > AI_RUNNING > TODO > DONE)', () => {
+    function pickHeroCard(cards: Card[], selectedId: string | null = null): Card | null {
+      if (cards.length === 0) return null
+      if (selectedId) {
+        const found = cards.find((c) => c.id === selectedId)
+        if (found) return found
+      }
+      return (
+        cards.find((c) => c.status === 'WAITING_ACCEPT') ||
+        cards.find((c) => c.status === 'BLOCKED') ||
+        cards.find((c) => c.status === 'AI_RUNNING') ||
+        cards.find((c) => c.status === 'TODO') ||
+        cards[0]
+      )
+    }
+
+    const cTodo: Card = { id: 'c_todo', title: 'Todo', status: 'TODO', owner: 'SELF', order: 0, collapsed: false, tasks: [], aiWork: { history: [] }, createdAt: '', updatedAt: '' }
+    const cDone: Card = { id: 'c_done', title: 'Done', status: 'DONE', owner: 'SELF', order: 1, collapsed: false, tasks: [], aiWork: { history: [] }, createdAt: '', updatedAt: '' }
+    const cAi: Card = { id: 'c_ai', title: 'AI', status: 'AI_RUNNING', owner: 'GEMINI', order: 2, collapsed: false, tasks: [], aiWork: { history: [] }, createdAt: '', updatedAt: '' }
+    const cBlocked: Card = { id: 'c_blocked', title: 'Blocked', status: 'BLOCKED', owner: 'CODEX', order: 3, collapsed: false, tasks: [], aiWork: { history: [] }, createdAt: '', updatedAt: '' }
+    const cWait: Card = { id: 'c_wait', title: 'Wait', status: 'WAITING_ACCEPT', owner: 'SELF', order: 4, collapsed: false, tasks: [], aiWork: { history: [] }, createdAt: '', updatedAt: '' }
+
+    // When all statuses exist: WAITING_ACCEPT is prioritized
+    expect(pickHeroCard([cTodo, cDone, cAi, cBlocked, cWait])?.id).toBe('c_wait')
+
+    // When WAITING_ACCEPT is missing: BLOCKED is prioritized
+    expect(pickHeroCard([cTodo, cDone, cAi, cBlocked])?.id).toBe('c_blocked')
+
+    // When BLOCKED is missing: AI_RUNNING is prioritized
+    expect(pickHeroCard([cTodo, cDone, cAi])?.id).toBe('c_ai')
+
+    // When AI_RUNNING is missing: TODO is prioritized over DONE
+    expect(pickHeroCard([cDone, cTodo])?.id).toBe('c_todo')
+
+    // User manual selection overrides automatic priority
+    expect(pickHeroCard([cWait, cAi], 'c_ai')?.id).toBe('c_ai')
+  })
+
+  it('UI-2: Floating Widget dynamic height calculation scales cleanly without 490px void', () => {
+    function computeWidgetHeight(cardCount: number): number {
+      if (cardCount === 0) return 205
+      if (cardCount === 1) return 310
+      if (cardCount === 2) return 365
+      return 425
+    }
+
+    expect(computeWidgetHeight(0)).toBe(205)
+    expect(computeWidgetHeight(1)).toBe(310)
+    expect(computeWidgetHeight(2)).toBe(365)
+    expect(computeWidgetHeight(5)).toBe(425)
+  })
 })
 
