@@ -97,7 +97,7 @@ export const WidgetView: React.FC = () => {
   }
 
   // Cross-project Priority Task Extraction & Ranking (PRD Section 7.1)
-  const { priorityTasks, counts } = useMemo(() => {
+  const { priorityTasks, recentDoneNote, counts } = useMemo(() => {
     const allActiveNodes: PriorityTaskItem[] = []
     let waitingReviewCount = 0
     let blockedCount = 0
@@ -181,8 +181,30 @@ export const WidgetView: React.FC = () => {
       return 0
     })
 
+    // Compute recent completed note (v3.1 spec Section 3.3)
+    let recentDoneNote = ''
+    let latestDoneTime = 0
+    function findLatestAccepted(tasks: TaskNode[]) {
+      for (const t of tasks) {
+        const status = t.status || (t.completed ? 'ACCEPTED' : 'TODO')
+        if (status === 'ACCEPTED') {
+          const time = t.completedAt ? new Date(t.completedAt).getTime() : 0
+          if (time >= latestDoneTime) {
+            latestDoneTime = time
+            const ownerName = t.owner === 'GEMINI' ? 'Gemini' : t.owner === 'CODEX' ? 'Codex' : '自己'
+            recentDoneNote = `最近完成：${ownerName} · ${t.title}`
+          }
+        }
+        if (t.children && t.children.length > 0) findLatestAccepted(t.children)
+      }
+    }
+    for (const card of cards) {
+      findLatestAccepted((card.tasks || []) as TaskNode[])
+    }
+
     return {
       priorityTasks: allActiveNodes.slice(0, 4),
+      recentDoneNote,
       counts: {
         waitingReview: waitingReviewCount,
         blocked: blockedCount,
@@ -299,19 +321,26 @@ export const WidgetView: React.FC = () => {
           </div>
         </div>
 
-        {/* Counter Summary Pill (PRD Section 7.2) */}
-        <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono pt-0.5">
-          <span className={counts.waitingReview > 0 ? 'text-purple-300 font-semibold' : ''}>
-            待验收 {counts.waitingReview}
-          </span>
-          <span className="text-slate-600">·</span>
-          <span className={counts.blocked > 0 ? 'text-rose-300 font-semibold' : ''}>
-            阻塞 {counts.blocked}
-          </span>
-          <span className="text-slate-600">·</span>
-          <span className={counts.inProgress > 0 ? 'text-blue-300 font-semibold' : ''}>
-            执行中 {counts.inProgress}
-          </span>
+        {/* Counter Summary Pill (PRD Section 7.2) & Minimal Recent Done Background (v3.1 Section 3.3) */}
+        <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400 font-mono pt-0.5">
+          <div className="flex items-center gap-1.5">
+            <span className={counts.waitingReview > 0 ? 'text-purple-300 font-semibold' : ''}>
+              待验收 {counts.waitingReview}
+            </span>
+            <span className="text-slate-600">·</span>
+            <span className={counts.blocked > 0 ? 'text-rose-300 font-semibold' : ''}>
+              阻塞 {counts.blocked}
+            </span>
+            <span className="text-slate-600">·</span>
+            <span className={counts.inProgress > 0 ? 'text-blue-300 font-semibold' : ''}>
+              执行中 {counts.inProgress}
+            </span>
+          </div>
+          {recentDoneNote && (
+            <span className="text-[10px] text-slate-400/80 truncate max-w-[140px] font-sans" title={recentDoneNote}>
+              {recentDoneNote}
+            </span>
+          )}
         </div>
       </div>
 

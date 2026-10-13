@@ -1,11 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { Card, AppData, DEFAULT_SETTINGS, TaskNode } from './domain/types'
-import { Header, FilterStatus, SortOption } from './components/Header'
-import { TaskCard } from './components/TaskCard'
+import { Header } from './components/Header'
+import { TaskLineCanvas } from './components/TaskLineCanvas'
 import { TaskNodeDrawer } from './components/TaskNodeDrawer'
 import { SettingsModal } from './components/SettingsModal'
-import { isCardOverdue } from './domain/date'
-import { reorderCards } from './domain/calculator'
 import { Plus, Undo2, AlertTriangle, CheckCircle2 } from 'lucide-react'
 
 export const App: React.FC = () => {
@@ -17,9 +15,8 @@ export const App: React.FC = () => {
     lastModified: new Date().toISOString()
   })
 
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
-  const [currentFilter, setCurrentFilter] = useState<FilterStatus>('ALL')
-  const [currentSort, setCurrentSort] = useState<SortOption>('MANUAL')
   const [showSettings, setShowSettings] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved')
   const [isLoaded, setIsLoaded] = useState(false)
@@ -204,7 +201,12 @@ export const App: React.FC = () => {
       if (action === 'new-card') {
         handleAddNewCard()
       } else if (action === 'filter-waiting-accept') {
-        setCurrentFilter('WAITING_ACCEPT')
+        const found = data.cards.find((c) =>
+          ((c.tasks || []) as TaskNode[]).some((t) => t.status === 'WAITING_REVIEW')
+        )
+        if (found) {
+          setActiveProjectId(found.id)
+        }
       }
     })
     return () => unsubscribe()
@@ -426,41 +428,7 @@ export const App: React.FC = () => {
     })
   }
 
-  // Card Reordering based on stable ID (P1-01)
-  const handleMoveCardOrder = (cardId: string, direction: 'up' | 'down') => {
-    setData((prev) => {
-      const nextRevision = (prev.revision || 0) + 1
-      currentRevisionRef.current = nextRevision
-      return {
-        ...prev,
-        cards: reorderCards(prev.cards, cardId, direction),
-        revision: nextRevision,
-        lastModified: new Date().toISOString()
-      }
-    })
-  }
 
-  // Card Drag and Drop Reordering (P1-01)
-  const handleDropCardOrder = (sourceCardId: string, targetCardId: string) => {
-    if (sourceCardId === targetCardId) return
-    setData((prev) => {
-      const sorted = [...prev.cards].sort((a, b) => a.order - b.order)
-      const srcIdx = sorted.findIndex((c) => c.id === sourceCardId)
-      const tgtIdx = sorted.findIndex((c) => c.id === targetCardId)
-      if (srcIdx === -1 || tgtIdx === -1) return prev
-
-      const [moved] = sorted.splice(srcIdx, 1)
-      sorted.splice(tgtIdx, 0, moved)
-      const nextRevision = (prev.revision || 0) + 1
-      currentRevisionRef.current = nextRevision
-      return {
-        ...prev,
-        cards: sorted.map((c, idx) => ({ ...c, order: idx })),
-        revision: nextRevision,
-        lastModified: new Date().toISOString()
-      }
-    })
-  }
 
   const handleInitializeClean = async () => {
     if (confirm('确认放弃损坏的原文件并全新初始化？此操作将清空损坏卡片数据并恢复安全状态。')) {
@@ -599,143 +567,122 @@ export const App: React.FC = () => {
     })
   }
 
-  // Filter & Search & Sort pipeline
-  const filteredAndSortedCards = useMemo(() => {
-    let result = [...data.cards]
-
-    // 1. Search Query
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim()
-      result = result.filter((card) => {
-        const titleMatch = card.title.toLowerCase().includes(q)
-        const catMatch = card.category?.toLowerCase().includes(q)
-        const descMatch = card.description?.toLowerCase().includes(q)
-        const aiFocusMatch = card.aiWork.currentTaskDescription?.toLowerCase().includes(q)
-        const aiProgressMatch = card.aiWork.recentProgress?.toLowerCase().includes(q)
-
-        // Check tasks
-        const hasTaskMatch = (tasks: typeof card.tasks): boolean => {
-          return tasks.some(
-            (t) => t.title.toLowerCase().includes(q) || hasTaskMatch(t.children)
-          )
-        }
-        return titleMatch || catMatch || descMatch || aiFocusMatch || aiProgressMatch || hasTaskMatch(card.tasks)
-      })
-    }
-
-    // 2. Status Filter
-    if (currentFilter !== 'ALL') {
-      if (currentFilter === 'OVERDUE') {
-        result = result.filter((c) => isCardOverdue(c))
-      } else {
-        result = result.filter((c) => c.status === currentFilter)
+  // Search filter pipeline for projects
+  const filteredCards = useMemo(() => {
+    if (!searchQuery.trim()) return data.cards
+    const q = searchQuery.toLowerCase().trim()
+    return data.cards.filter((card) => {
+      const titleMatch = card.title.toLowerCase().includes(q)
+      const catMatch = card.category?.toLowerCase().includes(q)
+      const descMatch = card.description?.toLowerCase().includes(q)
+      const hasTaskMatch = (tasks: typeof card.tasks): boolean => {
+        return tasks.some(
+          (t) => t.title.toLowerCase().includes(q) || hasTaskMatch(t.children)
+        )
       }
-    }
+      return titleMatch || catMatch || descMatch || hasTaskMatch(card.tasks)
+    })
+  }, [data.cards, searchQuery])
 
-    // 3. Sorting
-    if (currentSort === 'UPDATED') {
-      result.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-    } else if (currentSort === 'DUE_DATE') {
-      result.sort((a, b) => {
-        if (!a.dueDate) return 1
-        if (!b.dueDate) return -1
-        return a.dueDate.localeCompare(b.dueDate)
-      })
-    } else {
-      // MANUAL
-      result.sort((a, b) => a.order - b.order)
-    }
+  const activeProject = useMemo(() => {
+    if (data.cards.length === 0) return null
+    return data.cards.find((c) => c.id === activeProjectId) || data.cards[0]
+  }, [data.cards, activeProjectId])
 
-    return result
-  }, [data.cards, searchQuery, currentFilter, currentSort])
+  const activeNode = useMemo(() => {
+    if (!drawerTarget || !activeProject) return null
+    function findNodeInTree(list: TaskNode[], id: string): TaskNode | null {
+      for (const item of list) {
+        if (item.id === id) return item
+        if (item.children && item.children.length > 0) {
+          const found = findNodeInTree(item.children as TaskNode[], id)
+          if (found) return found
+        }
+      }
+      return null
+    }
+    return findNodeInTree((activeProject.tasks || []) as TaskNode[], drawerTarget.nodeId)
+  }, [drawerTarget, activeProject])
 
   return (
-    <div className="flex flex-col min-h-screen bg-slate-50 dark:bg-slate-950 transition-colors">
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-50 dark:bg-slate-950 transition-colors">
       <Header
-        cards={data.cards}
-        searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
-        currentFilter={currentFilter}
-        onFilterChange={setCurrentFilter}
-        currentSort={currentSort}
-        onSortChange={setCurrentSort}
-        onAddCard={handleAddNewCard}
+        cards={filteredCards}
+        activeProjectId={activeProject ? activeProject.id : null}
+        onSelectProject={setActiveProjectId}
+        onAddProject={handleAddNewCard}
+        onDeleteProject={handleDeleteCard}
+        onDuplicateProject={handleDuplicateCard}
         onOpenSettings={() => setShowSettings(true)}
         saveStatus={saveStatus}
         onAddSampleProject={handleAddSampleProject}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
       />
 
-      {/* Main Content Area */}
-      <main className="flex-1 p-6 max-w-7xl w-full mx-auto">
-        {data.cards.length === 0 ? (
-          /* Empty State */
-          <div className="flex flex-col items-center justify-center py-24 text-center space-y-4">
-            <div className="w-14 h-14 rounded-2xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 flex items-center justify-center border border-blue-100 dark:border-blue-900/60 shadow-sm">
-              <CheckCircle2 className="w-7 h-7" />
+      {/* Main Workspace Body: Single Taskline Canvas on Left + Docked 350px Inspector on Right */}
+      <div className="flex-1 flex overflow-hidden relative">
+        <div className="flex-1 flex flex-col overflow-hidden relative">
+          {data.cards.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center py-24 text-center space-y-4">
+              <div className="w-14 h-14 rounded-2xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 flex items-center justify-center border border-blue-100 dark:border-blue-900/60 shadow-xs">
+                <CheckCircle2 className="w-7 h-7" />
+              </div>
+              <div className="space-y-1">
+                <h2 className="text-base font-bold text-slate-800 dark:text-slate-100">
+                  还没有任务线
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
+                  创建任务线后，在此画布上以个人 DAG 流水线推进与 AI 协同工作。
+                </p>
+              </div>
+              <div className="flex items-center gap-3 pt-2">
+                <button
+                  onClick={handleAddNewCard}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-medium text-xs rounded-xl shadow-xs shadow-blue-500/20 transition-all"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>+ 新建任务线</span>
+                </button>
+                <button
+                  onClick={handleAddSampleProject}
+                  className="text-xs text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 hover:underline px-2 py-1"
+                >
+                  载入演示项目 (FMU + MuJoCo)
+                </button>
+              </div>
             </div>
-            <div className="space-y-1">
-              <h2 className="text-base font-bold text-slate-800 dark:text-slate-100">
-                还没有任务卡片
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
-                创建任务后，这里会显示任务清单与 AI 协同工作状态。
-              </p>
-            </div>
-            <div className="flex items-center gap-3 pt-2">
-              <button
-                onClick={handleAddNewCard}
-                className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-medium text-xs rounded-xl shadow-sm shadow-blue-500/20 transition-all"
-              >
-                <Plus className="w-4 h-4" />
-                <span>+ 新建任务卡片</span>
-              </button>
-              <button
-                onClick={handleAddSampleProject}
-                className="text-xs text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 hover:underline px-2 py-1"
-              >
-                载入演示项目 (FMU + MuJoCo)
-              </button>
-            </div>
-          </div>
-        ) : filteredAndSortedCards.length === 0 ? (
-          /* No search or filter result */
-          <div className="text-center py-20 text-slate-400 space-y-2">
-            <p className="text-sm">没有匹配到符合筛选条件的卡片</p>
-            <button
-              onClick={() => {
-                setSearchQuery('')
-                setCurrentFilter('ALL')
-              }}
-              className="text-xs text-blue-600 hover:underline"
-            >
-              清除所有筛选条件
-            </button>
-          </div>
-        ) : (
-          /* Responsive Card Grid (3 / 2 / 1 columns, 320-400px cards) */
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5 items-start">
-            {filteredAndSortedCards.map((card, index) => (
-              <TaskCard
-                key={card.id}
-                card={card}
-                currentSort={currentSort}
-                onUpdateCard={(updates) => handleUpdateCard(card.id, updates)}
-                onDeleteCard={handleDeleteCard}
-                onDuplicateCard={handleDuplicateCard}
-                onMoveOrder={(dir) => handleMoveCardOrder(card.id, dir)}
-                onDropOrder={handleDropCardOrder}
-                isFirst={index === 0}
-                isLast={index === filteredAndSortedCards.length - 1}
-                onNotifyUndo={(msg, action) => {
-                  setUndoToast({ message: msg, action })
-                  setTimeout(() => setUndoToast(null), 6000)
-                }}
-                onOpenNodeDrawer={(node) => setDrawerTarget({ projectId: card.id, nodeId: node.id })}
-              />
-            ))}
-          </div>
+          ) : activeProject ? (
+            <TaskLineCanvas
+              project={activeProject}
+              onUpdateProject={(updates) => handleUpdateCard(activeProject.id, updates)}
+              onOpenNodeDrawer={(node) =>
+                setDrawerTarget({ projectId: activeProject.id, nodeId: node.id })
+              }
+              selectedNodeId={
+                drawerTarget && drawerTarget.projectId === activeProject.id
+                  ? drawerTarget.nodeId
+                  : null
+              }
+            />
+          ) : null}
+        </div>
+
+        {/* Docked 350px Inspector Panel (Non-blocking, zero modal collisions!) */}
+        {activeProject && activeNode && (
+          <TaskNodeDrawer
+            project={activeProject}
+            node={activeNode}
+            isOpen={true}
+            onClose={() => setDrawerTarget(null)}
+            onUpdateNode={(updated) => handleUpdateTaskNode(activeProject.id, updated)}
+            onDeleteNode={(nodeId) => {
+              handleDeleteTaskNode(activeProject.id, nodeId)
+              setDrawerTarget(null)
+            }}
+          />
         )}
-      </main>
+      </div>
 
       {/* Undo Toast Notification */}
       {undoToast && (
@@ -836,38 +783,6 @@ export const App: React.FC = () => {
           }}
         />
       )}
-
-      {/* Task Node Execution & Review Drawer (PRD Section 4.2 & 6) */}
-      {(() => {
-        if (!drawerTarget) return null
-        const activeProject = data.cards.find((c) => c.id === drawerTarget.projectId)
-        if (!activeProject) return null
-
-        function findNodeInTree(list: TaskNode[], id: string): TaskNode | null {
-          for (const item of list) {
-            if (item.id === id) return item
-            if (item.children && item.children.length > 0) {
-              const found = findNodeInTree(item.children, id)
-              if (found) return found
-            }
-          }
-          return null
-        }
-
-        const activeNode = findNodeInTree(activeProject.tasks as TaskNode[], drawerTarget.nodeId)
-        if (!activeNode) return null
-
-        return (
-          <TaskNodeDrawer
-            project={activeProject}
-            node={activeNode}
-            isOpen={true}
-            onClose={() => setDrawerTarget(null)}
-            onUpdateNode={(updated) => handleUpdateTaskNode(activeProject.id, updated)}
-            onDeleteNode={(nodeId) => handleDeleteTaskNode(activeProject.id, nodeId)}
-          />
-        )
-      })()}
     </div>
   )
 }

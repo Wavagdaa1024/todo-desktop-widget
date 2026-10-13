@@ -54,6 +54,8 @@ export interface TaskItem {
   migrationNote?: string
   rounds?: ExecutionRound[]
   events?: TaskEvent[]
+  parents?: string[]
+  completedAt?: string
 }
 
 export interface TaskNode extends TaskItem {
@@ -62,6 +64,8 @@ export interface TaskNode extends TaskItem {
   rounds: ExecutionRound[]
   events: TaskEvent[]
   children: TaskNode[]
+  parents?: string[]
+  completedAt?: string
 }
 
 // Legacy progress log interface
@@ -84,6 +88,7 @@ export interface Project<T extends TaskItem = TaskItem> {
   dueDate?: string // YYYY-MM-DD
   order: number
   collapsed: boolean
+  tasklineHistoryCollapsed?: boolean
   tasks: T[]
   legacyAiHistory?: ProgressLog[]
   legacyAiArchive?: {
@@ -187,6 +192,8 @@ export const TaskNodeSchema: z.ZodType<TaskNode, z.ZodTypeDef, any> = z.lazy(() 
       children: z.array(TaskNodeSchema),
       rounds: z.array(ExecutionRoundSchema).optional().default([]),
       events: z.array(TaskEventSchema).optional().default([]),
+      parents: z.array(z.string()).optional().default([]),
+      completedAt: z.string().optional(),
       createdAt: z.string(),
       updatedAt: z.string(),
       migrationNote: z.string().optional(),
@@ -228,6 +235,7 @@ export const ProjectSchema = z.object({
   dueDate: z.string().optional(),
   order: z.number().optional().default(0),
   collapsed: z.boolean().optional().default(false),
+  tasklineHistoryCollapsed: z.boolean().optional().default(true),
   tasks: z.array(TaskNodeSchema).default([]),
   legacyAiHistory: z.array(ProgressLogSchema).optional(),
   legacyAiArchive: z
