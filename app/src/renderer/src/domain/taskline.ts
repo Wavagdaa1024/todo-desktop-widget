@@ -121,7 +121,6 @@ export function makeTasklineGraph(
   const CAPSULE_H = options.capsuleHeight ?? 42
   const LEFT = options.paddingLeft ?? 50
   const TOP = options.paddingTop ?? 95
-  const COL_W = NODE_W + COL_GAP
   const isAutoCollapsed = options.collapseHistory !== false
 
   const completedNodes = nodes.filter((n) => isNodeCompleted(n))
@@ -233,10 +232,22 @@ export function makeTasklineGraph(
     seen.add(id)
     const n = graphMap.get(id)
     if (!n) return 0
+    if (n.id === '__archive__') {
+      depthMemo.set(id, 0)
+      return 0
+    }
     const pDepths = (n.renderParents || [])
       .filter((pid) => graphMap.has(pid))
       .map((pid) => calcDepth(pid, new Set(seen)))
-    const d = pDepths.length ? Math.max(...pDepths) + 1 : 0
+
+    let d: number
+    if (pDepths.length === 0) {
+      // If showCapsule is true, active root tasks without parents should start at depth 1
+      // so Column 0 is reserved purely for the history capsule
+      d = showCapsule ? 1 : 0
+    } else {
+      d = Math.max(...pDepths) + 1
+    }
     depthMemo.set(id, d)
     return d
   }
@@ -254,17 +265,30 @@ export function makeTasklineGraph(
   const rowMax = Math.max(1, ...[...cols.values()].map((v) => v.length))
   const rowStep = NODE_H + ROW_GAP
 
-  // Layout: when capsule is present, Column 0 is compact (Capsule width 172px)
-  const col0Width = showCapsule ? CAPSULE_W + 35 : NODE_W + COL_GAP
-
-  function getColX(d: number): number {
-    if (!showCapsule) return LEFT + d * COL_W
-    if (d === 0) return LEFT
-    return LEFT + col0Width + (d - 1) * COL_W
+  // Dynamic column widths:
+  // Each column's allocated width is the max width of the items actually inside it.
+  const colWidths = new Map<number, number>()
+  for (let d = 0; d <= maxDepth; d++) {
+    const colNodes = cols.get(d) || []
+    const maxW = colNodes.reduce(
+      (w, n) => Math.max(w, n.isArchive ? CAPSULE_W : NODE_W),
+      0
+    )
+    colWidths.set(d, maxW || (showCapsule && d === 0 ? CAPSULE_W : NODE_W))
   }
 
+  function getColX(d: number): number {
+    let x = LEFT
+    for (let i = 0; i < d; i++) {
+      x += (colWidths.get(i) || NODE_W) + COL_GAP
+    }
+    return x
+  }
+
+  const lastColX = getColX(maxDepth)
+  const lastColW = colWidths.get(maxDepth) || NODE_W
   const contentHeight = Math.max(380, TOP + rowMax * rowStep + 45)
-  const contentWidth = Math.max(540, getColX(maxDepth) + NODE_W + LEFT + 30)
+  const contentWidth = Math.max(540, lastColX + lastColW + LEFT + 30)
 
   const positions = new Map<string, TasklinePosition>()
   for (let d = 0; d <= maxDepth; d++) {
@@ -312,12 +336,12 @@ export function makeTasklineGraph(
   const stages: TasklineStage[] = []
   for (let col = 0; col <= maxDepth; col++) {
     const x = getColX(col) - 16
-    let stageW = NODE_W + 32
+    const curW = colWidths.get(col) || NODE_W
+    const stageW = curW + 32
     let title = `继续推进 · ${String(col + 1).padStart(2, '0')}`
     let isHistoryStage = false
 
     if (showCapsule && col === 0) {
-      stageW = CAPSULE_W + 30
       title = '已归档历史'
       isHistoryStage = true
     } else if (showCapsule && col === 1) {

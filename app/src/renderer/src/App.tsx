@@ -656,6 +656,7 @@ export const App: React.FC = () => {
             <TaskLineCanvas
               project={activeProject}
               onUpdateProject={(updates) => handleUpdateCard(activeProject.id, updates)}
+              onUpdateTaskNode={(node) => handleUpdateTaskNode(activeProject.id, node)}
               onOpenNodeDrawer={(node) =>
                 setDrawerTarget({ projectId: activeProject.id, nodeId: node.id })
               }

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react'
 import { Project, TaskNode, OwnerType } from '../domain/types'
-import { makeTasklineGraph, TasklineGraph } from '../domain/taskline'
+import { makeTasklineGraph, TasklineGraph, isNodeCompleted } from '../domain/taskline'
 import {
   RotateCcw,
   ZoomIn,
@@ -9,12 +9,14 @@ import {
   GitBranch,
   GitMerge,
   ArrowRight,
-  X
+  X,
+  Check
 } from 'lucide-react'
 
 interface TaskLineCanvasProps {
   project: Project
   onUpdateProject: (updates: Partial<Project>) => void
+  onUpdateTaskNode?: (updatedNode: TaskNode) => void
   onOpenNodeDrawer?: (node: TaskNode) => void
   selectedNodeId?: string | null
 }
@@ -22,6 +24,7 @@ interface TaskLineCanvasProps {
 export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
   project,
   onUpdateProject,
+  onUpdateTaskNode,
   onOpenNodeDrawer,
   selectedNodeId
 }) => {
@@ -99,6 +102,55 @@ export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
       tasklineHistoryCollapsed: !isHistoryCollapsed
     })
   }, [isHistoryCollapsed, onUpdateProject])
+
+  // 1-Click quick complete/uncomplete toggle ("卡片看板那种方框")
+  const handleToggleComplete = useCallback(
+    (nodeId: string) => {
+      const raw = flattenedNodes.find((n) => n.id === nodeId)
+      if (!raw) return
+
+      const isCompleted = isNodeCompleted(raw)
+      const now = new Date().toISOString()
+      const nextCompleted = !isCompleted
+
+      const updated: TaskNode = {
+        ...raw,
+        completed: nextCompleted,
+        status: nextCompleted ? 'ACCEPTED' : 'TODO',
+        completedAt: nextCompleted ? now : undefined,
+        events: [
+          ...(raw.events || []),
+          {
+            id: `evt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            roundId: `round_quick_${Date.now()}`,
+            timestamp: now,
+            source: 'SELF',
+            type: nextCompleted ? 'ACCEPTED' : 'RESUMED',
+            summary: nextCompleted ? '快捷勾选标记完成' : '取消完成标记，恢复待开始'
+          }
+        ],
+        updatedAt: now
+      }
+
+      if (onUpdateTaskNode) {
+        onUpdateTaskNode(updated)
+      } else {
+        function updateTree(list: TaskNode[]): TaskNode[] {
+          return list.map((t) => {
+            if (t.id === updated.id) return updated
+            if (t.children && t.children.length > 0) {
+              return { ...t, children: updateTree(t.children as TaskNode[]) }
+            }
+            return t
+          })
+        }
+        onUpdateProject({
+          tasks: updateTree((project.tasks || []) as TaskNode[])
+        })
+      }
+    },
+    [flattenedNodes, onUpdateTaskNode, onUpdateProject, project.tasks]
+  )
 
   const handleFitView = () => {
     if (!viewportRef.current || graph.width <= 0) return
@@ -419,26 +471,45 @@ export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
                     top: `${pos.y}px`
                   }}
                 >
-                  {/* Card Header: Owner + Status + Recent Done Pill */}
+                  {/* Card Header: 1-Click Checkbox + Owner + Status + Recent Done Pill */}
                   <div className="flex items-center justify-between gap-1.5">
-                    <div className="flex items-center gap-1.5">
-                      <span
-                        className={`w-5 h-5 rounded-md flex items-center justify-center font-bold text-[11px] ${
-                          item.owner === 'GEMINI'
-                            ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300'
-                            : item.owner === 'CODEX'
-                            ? 'bg-teal-100 text-teal-700 dark:bg-teal-950/60 dark:text-teal-300'
-                            : 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                    <div className="flex items-center gap-2 min-w-0">
+                      {/* Checkbox square from card board ("卡片看板那种方框，放一个在每个图标左上角") */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleToggleComplete(item.id)
+                        }}
+                        className={`w-4 h-4 rounded flex items-center justify-center transition-all shrink-0 cursor-pointer border ${
+                          isDone
+                            ? 'bg-emerald-500 border-emerald-600 text-white shadow-xs'
+                            : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 hover:border-emerald-500 hover:bg-emerald-50/40 dark:hover:border-emerald-400'
                         }`}
+                        title={isDone ? '点击恢复为未完成' : '点击快捷标记完成'}
                       >
-                        {item.owner === 'GEMINI' ? 'G' : item.owner === 'CODEX' ? 'C' : '我'}
-                      </span>
-                      <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
-                        {item.owner === 'GEMINI' ? 'Gemini' : item.owner === 'CODEX' ? 'Codex' : '自己'}
-                      </span>
+                        {isDone && <Check className="w-3 h-3 text-white stroke-[3]" />}
+                      </button>
+
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span
+                          className={`w-5 h-5 rounded-md flex items-center justify-center font-bold text-[11px] shrink-0 ${
+                            item.owner === 'GEMINI'
+                              ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300'
+                              : item.owner === 'CODEX'
+                              ? 'bg-teal-100 text-teal-700 dark:bg-teal-950/60 dark:text-teal-300'
+                              : 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                          }`}
+                        >
+                          {item.owner === 'GEMINI' ? 'G' : item.owner === 'CODEX' ? 'C' : '我'}
+                        </span>
+                        <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 truncate">
+                          {item.owner === 'GEMINI' ? 'Gemini' : item.owner === 'CODEX' ? 'Codex' : '自己'}
+                        </span>
+                      </div>
                     </div>
 
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 shrink-0">
                       {isRecentDone && (
                         <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
                           最近完成✓
@@ -472,7 +543,13 @@ export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
 
                   {/* Card Title & Desc */}
                   <div className="space-y-1">
-                    <h3 className="text-xs font-bold text-slate-800 dark:text-slate-100 line-clamp-2 leading-snug">
+                    <h3
+                      className={`text-xs font-bold leading-snug line-clamp-2 transition-colors ${
+                        isDone
+                          ? 'line-through text-slate-400 dark:text-slate-500'
+                          : 'text-slate-800 dark:text-slate-100'
+                      }`}
+                    >
                       {item.title}
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed">

@@ -241,4 +241,59 @@ describe('v3.1 Taskline Completed History Auto-Collapse Rules', () => {
     // Since r3 is hidden and r_extra has no other visible parent, it routes cleanly to __archive__
     expect(extraItem?.renderParents).toContain('__archive__')
   })
+
+  it('Regression Test: No horizontal or vertical overlap between root tasks and branches when history is collapsed', () => {
+    // 3 completed nodes (collapsed to capsule + latest completed)
+    const nodes: TaskNode[] = [
+      makeMockNode('dada_1', '前置准备', 'ACCEPTED', 'CODEX', [], '2026-10-13T09:00:00Z'),
+      makeMockNode('dada_2', '模型搭建', 'ACCEPTED', 'GEMINI', ['dada_1'], '2026-10-13T10:00:00Z'),
+      makeMockNode('dada_3', '基准测试', 'ACCEPTED', 'CODEX', ['dada_2'], '2026-10-13T11:00:00Z'),
+      // Active tasks: one independent root task ("你好"), one branching from hidden node ("DADS"), one merging ("11")
+      makeMockNode('t_root', '你好', 'TODO', 'SELF', []),
+      makeMockNode('t_branch', 'DADS', 'TODO', 'GEMINI', ['dada_2']),
+      makeMockNode('t_merge', '11', 'TODO', 'GEMINI', ['t_root', 't_branch'])
+    ]
+
+    const g = makeTasklineGraph(nodes, {
+      nodeWidth: 236,
+      nodeHeight: 124,
+      colGap: 70,
+      rowGap: 28,
+      paddingLeft: 36,
+      paddingTop: 56,
+      collapseHistory: true
+    })
+
+    expect(g.showCapsule).toBe(true)
+    expect(g.hiddenCount).toBe(2)
+    expect(g.latestCompletedNode?.id).toBe('dada_3')
+
+    const posCapsule = g.positions.get('__archive__')!
+    const posRoot = g.positions.get('t_root')!
+    const posBranch = g.positions.get('t_branch')!
+    const posLatest = g.positions.get('dada_3')!
+    const posMerge = g.positions.get('t_merge')!
+
+    expect(posCapsule).toBeDefined()
+    expect(posRoot).toBeDefined()
+    expect(posBranch).toBeDefined()
+    expect(posLatest).toBeDefined()
+    expect(posMerge).toBeDefined()
+
+    // Capsule is at Column 0
+    expect(posCapsule.x).toBe(36)
+
+    // Active root task "你好", branched task "DADS", and latest completed task are all at Column 1 (x > 36 + capsule_w)
+    expect(posRoot.x).toBeGreaterThan(posCapsule.x + 172)
+    expect(posBranch.x).toBe(posRoot.x)
+    expect(posLatest.x).toBe(posRoot.x)
+
+    // In Column 1, nodes must NOT overlap vertically (separated by at least nodeHeight)
+    const col1YValues = [posRoot.y, posBranch.y, posLatest.y].sort((a, b) => a - b)
+    expect(col1YValues[1] - col1YValues[0]).toBeGreaterThanOrEqual(124 + 28)
+    expect(col1YValues[2] - col1YValues[1]).toBeGreaterThanOrEqual(124 + 28)
+
+    // Merge node is at Column 2 (strictly to the right of Column 1 with full gap)
+    expect(posMerge.x).toBeGreaterThanOrEqual(posRoot.x + 236 + 70)
+  })
 })

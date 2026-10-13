@@ -216,6 +216,31 @@ export const TaskNodeDrawer: React.FC<TaskNodeDrawerProps> = ({
     setInlineAction('NONE')
   }
 
+  // 1-Click quick complete/uncomplete toggle ("卡片看板那种方框")
+  const handleToggleComplete = () => {
+    const nextDone = !isDone
+    const now = new Date().toISOString()
+    const updated: TaskNode = {
+      ...currentNode,
+      completed: nextDone,
+      status: nextDone ? 'ACCEPTED' : 'TODO',
+      completedAt: nextDone ? now : undefined,
+      events: [
+        ...(currentNode.events || []),
+        {
+          id: `evt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          roundId: `round_manual_${Date.now()}`,
+          timestamp: now,
+          source: 'SELF',
+          type: nextDone ? 'ACCEPTED' : 'RESUMED',
+          summary: nextDone ? '快捷勾选标记完成' : '取消完成标记，恢复待开始'
+        }
+      ],
+      updatedAt: now
+    }
+    commitUpdate(updated)
+  }
+
   // Copy Context Prompt for Agent
   const handleCopyPrompt = () => {
     const prompt = `# 任务指令：${currentNode.title}
@@ -312,42 +337,61 @@ export const TaskNodeDrawer: React.FC<TaskNodeDrawerProps> = ({
             <span>方块 #{(currentNode.order || 0) + 1}</span>
           </div>
 
-          {/* Editable Title */}
-          {isEditingTitle ? (
-            <div className="flex items-center gap-1.5">
-              <input
-                type="text"
-                value={titleDraft}
-                onChange={(e) => setTitleDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleSaveTitle()
-                  if (e.key === 'Escape') {
-                    setTitleDraft(currentNode.title)
-                    setIsEditingTitle(false)
-                  }
-                }}
-                autoFocus
-                className="flex-1 text-xs font-bold px-2 py-1 border border-blue-500 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none"
-              />
-              <button
-                onClick={handleSaveTitle}
-                className="p-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-xs"
-              >
-                <Check className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ) : (
-            <h2
-              onClick={() => setIsEditingTitle(true)}
-              className="text-sm font-bold text-slate-900 dark:text-slate-100 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer flex items-center gap-1.5 group leading-snug"
-              title="点击修改任务名称"
+          {/* Quick Checkbox + Editable Title */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleToggleComplete}
+              className={`w-4 h-4 rounded flex items-center justify-center transition-all shrink-0 cursor-pointer border ${
+                isDone
+                  ? 'bg-emerald-500 border-emerald-600 text-white shadow-xs'
+                  : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 hover:border-emerald-500 hover:bg-emerald-50/40 dark:hover:border-emerald-400'
+              }`}
+              title={isDone ? '点击恢复为未完成' : '点击快捷标记完成'}
             >
-              <span>{currentNode.title}</span>
-              <span className="text-[10px] font-normal text-slate-400 opacity-0 group-hover:opacity-100">
-                编辑
-              </span>
-            </h2>
-          )}
+              {isDone && <Check className="w-3 h-3 text-white stroke-[3]" />}
+            </button>
+
+            {isEditingTitle ? (
+              <div className="flex items-center gap-1.5 flex-1">
+                <input
+                  type="text"
+                  value={titleDraft}
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSaveTitle()
+                    if (e.key === 'Escape') {
+                      setTitleDraft(currentNode.title)
+                      setIsEditingTitle(false)
+                    }
+                  }}
+                  autoFocus
+                  className="flex-1 text-xs font-bold px-2 py-1 border border-blue-500 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none"
+                />
+                <button
+                  onClick={handleSaveTitle}
+                  className="p-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-xs"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ) : (
+              <h2
+                onClick={() => setIsEditingTitle(true)}
+                className={`text-sm font-bold hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer flex items-center gap-1.5 group leading-snug flex-1 ${
+                  isDone
+                    ? 'line-through text-slate-400 dark:text-slate-500'
+                    : 'text-slate-900 dark:text-slate-100'
+                }`}
+                title="点击修改任务名称"
+              >
+                <span>{currentNode.title}</span>
+                <span className="text-[10px] font-normal text-slate-400 opacity-0 group-hover:opacity-100">
+                  编辑
+                </span>
+              </h2>
+            )}
+          </div>
         </div>
 
         <button
@@ -465,13 +509,22 @@ export const TaskNodeDrawer: React.FC<TaskNodeDrawerProps> = ({
                 </select>
               </div>
 
-              <button
-                onClick={handleStartRound}
-                className="w-full flex items-center justify-center gap-1.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold text-xs shadow-xs"
-              >
-                <Play className="w-3.5 h-3.5 fill-current" />
-                <span>开启第 {rounds.length + 1} 轮执行</span>
-              </button>
+              <div className="flex flex-col gap-1.5 pt-0.5">
+                <button
+                  onClick={handleStartRound}
+                  className="w-full flex items-center justify-center gap-1.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold text-xs shadow-xs"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>开启第 {rounds.length + 1} 轮执行</span>
+                </button>
+                <button
+                  onClick={handleToggleComplete}
+                  className="w-full flex items-center justify-center gap-1.5 py-1.5 border border-emerald-300 dark:border-emerald-700 bg-emerald-50/60 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100/70 dark:hover:bg-emerald-900/40 rounded-lg font-semibold text-xs transition-colors"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>直接标记已完成</span>
+                </button>
+              </div>
             </div>
           )}
 
@@ -641,11 +694,20 @@ export const TaskNodeDrawer: React.FC<TaskNodeDrawerProps> = ({
             </div>
           )}
 
-          {/* ACCEPTED: Status banner */}
+          {/* ACCEPTED: Status banner & Reopen */}
           {isDone && (
-            <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500" />
-              <span>此方块已通过人工验收并归档。</span>
+            <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs space-y-2">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500" />
+                <span>此方块已通过人工验收并归档。</span>
+              </div>
+              <button
+                onClick={handleToggleComplete}
+                className="w-full py-1.5 px-3 border border-slate-300 dark:border-slate-700 hover:bg-white dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>恢复为未完成状态</span>
+              </button>
             </div>
           )}
         </div>
