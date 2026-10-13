@@ -1,20 +1,70 @@
 import { z } from 'zod'
 
-export type CardStatus = 'TODO' | 'AI_RUNNING' | 'WAITING_ACCEPT' | 'BLOCKED' | 'DONE'
+export type TaskNodeStatus = 'TODO' | 'IN_PROGRESS' | 'WAITING_REVIEW' | 'BLOCKED' | 'ACCEPTED'
 export type OwnerType = 'SELF' | 'GEMINI' | 'CODEX' | 'OTHER'
+export type TaskEventType =
+  | 'ASSIGNED'
+  | 'STARTED'
+  | 'PROGRESS'
+  | 'BLOCKED'
+  | 'RESUMED'
+  | 'SUBMITTED'
+  | 'ACCEPTED'
+  | 'REJECTED'
+
+// Legacy status type retained for backward-compatibility during transition
+export type CardStatus = 'TODO' | 'AI_RUNNING' | 'WAITING_ACCEPT' | 'BLOCKED' | 'DONE'
+
+export interface TaskEvent {
+  id: string
+  roundId: string
+  timestamp: string // ISO timestamp
+  source: OwnerType
+  type: TaskEventType
+  summary: string
+  changedFiles?: string
+  testResults?: string
+  blockerReason?: string
+  nextAction?: string
+}
+
+export interface ExecutionRound {
+  id: string
+  roundNumber: number
+  owner: OwnerType
+  startTime: string // ISO timestamp
+  endTime?: string // ISO timestamp
+  conclusion?: 'ACCEPTED' | 'REJECTED' | 'ABORTED'
+  reviewNote?: string
+}
 
 export interface TaskItem {
   id: string
   title: string
-  completed: boolean
+  completed?: boolean
   notes?: string
   dueDate?: string // YYYY-MM-DD
   order: number
   children: TaskItem[]
   createdAt: string
   updatedAt: string
+  status?: TaskNodeStatus
+  owner?: OwnerType
+  acceptanceCriteria?: string
+  migrationNote?: string
+  rounds?: ExecutionRound[]
+  events?: TaskEvent[]
 }
 
+export interface TaskNode extends TaskItem {
+  status: TaskNodeStatus
+  owner: OwnerType
+  rounds: ExecutionRound[]
+  events: TaskEvent[]
+  children: TaskNode[]
+}
+
+// Legacy progress log interface
 export interface ProgressLog {
   id: string
   timestamp: string
@@ -26,28 +76,41 @@ export interface ProgressLog {
   nextAction?: string
 }
 
-export interface Card {
+export interface Project<T extends TaskItem = TaskItem> {
   id: string
   title: string
   category?: string
   description?: string
-  status: CardStatus
-  owner: OwnerType
   dueDate?: string // YYYY-MM-DD
   order: number
   collapsed: boolean
-  tasks: TaskItem[]
+  tasks: T[]
+  legacyAiHistory?: ProgressLog[]
+  legacyAiArchive?: {
+    lastOwner?: OwnerType
+    lastStatus?: string
+    currentTaskDescription?: string
+    recentProgress?: string
+    currentBlockers?: string
+    nextAction?: string
+  }
+  createdAt: string
+  updatedAt: string
+  // Compatibility properties
+  status: CardStatus
+  owner: OwnerType
   aiWork: {
-    activeStartTime?: string // ISO timestamp
+    activeStartTime?: string
     currentTaskDescription?: string
     recentProgress?: string
     currentBlockers?: string
     nextAction?: string
     history: ProgressLog[]
   }
-  createdAt: string
-  updatedAt: string
 }
+
+// Aliases for seamless backward compatibility
+export type Card = Project
 
 export interface AppSettings {
   theme: 'light' | 'dark' | 'system'
@@ -59,8 +122,9 @@ export interface AppSettings {
 }
 
 export interface AppData {
-  schemaVersion: 1
-  cards: Card[]
+  schemaVersion: 1 | 2
+  projects: Project[]
+  cards: Project[] // Alias for backward compatibility
   settings: AppSettings
   lastModified: string
   revision?: number
@@ -74,18 +138,75 @@ export interface StorageInitialResult {
 }
 
 // Zod Schemas for Runtime Validation
-export const TaskItemSchema: z.ZodType<TaskItem> = z.lazy(() =>
-  z.object({
-    id: z.string(),
-    title: z.string(),
-    completed: z.boolean(),
-    notes: z.string().optional(),
-    dueDate: z.string().optional(),
-    order: z.number(),
-    children: z.array(TaskItemSchema),
-    createdAt: z.string(),
-    updatedAt: z.string()
-  })
+export const TaskEventSchema = z.object({
+  id: z.string(),
+  roundId: z.string(),
+  timestamp: z.string(),
+  source: z.enum(['SELF', 'GEMINI', 'CODEX', 'OTHER']),
+  type: z.enum([
+    'ASSIGNED',
+    'STARTED',
+    'PROGRESS',
+    'BLOCKED',
+    'RESUMED',
+    'SUBMITTED',
+    'ACCEPTED',
+    'REJECTED'
+  ]),
+  summary: z.string(),
+  changedFiles: z.string().optional(),
+  testResults: z.string().optional(),
+  blockerReason: z.string().optional(),
+  nextAction: z.string().optional()
+})
+
+export const ExecutionRoundSchema = z.object({
+  id: z.string(),
+  roundNumber: z.number(),
+  owner: z.enum(['SELF', 'GEMINI', 'CODEX', 'OTHER']),
+  startTime: z.string(),
+  endTime: z.string().optional(),
+  conclusion: z.enum(['ACCEPTED', 'REJECTED', 'ABORTED']).optional(),
+  reviewNote: z.string().optional()
+})
+
+export const TaskNodeSchema: z.ZodType<TaskNode, z.ZodTypeDef, any> = z.lazy(() =>
+  z
+    .object({
+      id: z.string(),
+      title: z.string(),
+      status: z
+        .enum(['TODO', 'IN_PROGRESS', 'WAITING_REVIEW', 'BLOCKED', 'ACCEPTED'])
+        .optional()
+        .default('TODO'),
+      owner: z.enum(['SELF', 'GEMINI', 'CODEX', 'OTHER']).optional().default('SELF'),
+      acceptanceCriteria: z.string().optional(),
+      notes: z.string().optional(),
+      dueDate: z.string().optional(),
+      order: z.number(),
+      children: z.array(TaskNodeSchema),
+      rounds: z.array(ExecutionRoundSchema).optional().default([]),
+      events: z.array(TaskEventSchema).optional().default([]),
+      createdAt: z.string(),
+      updatedAt: z.string(),
+      migrationNote: z.string().optional(),
+      completed: z.boolean().optional()
+    })
+    .transform((val) => {
+      let status = val.status
+      if (val.completed !== undefined) {
+        if (val.completed && status === 'TODO') {
+          status = 'ACCEPTED'
+        } else if (!val.completed && status === 'ACCEPTED') {
+          status = 'TODO'
+        }
+      }
+      return {
+        ...val,
+        status,
+        completed: status === 'ACCEPTED'
+      }
+    })
 )
 
 export const ProgressLogSchema = z.object({
@@ -99,28 +220,45 @@ export const ProgressLogSchema = z.object({
   nextAction: z.string().optional()
 })
 
-export const CardSchema = z.object({
+export const ProjectSchema = z.object({
   id: z.string(),
   title: z.string(),
   category: z.string().optional(),
   description: z.string().optional(),
-  status: z.enum(['TODO', 'AI_RUNNING', 'WAITING_ACCEPT', 'BLOCKED', 'DONE']),
-  owner: z.enum(['SELF', 'GEMINI', 'CODEX', 'OTHER']),
   dueDate: z.string().optional(),
-  order: z.number(),
-  collapsed: z.boolean(),
-  tasks: z.array(TaskItemSchema),
-  aiWork: z.object({
-    activeStartTime: z.string().optional(),
-    currentTaskDescription: z.string().optional(),
-    recentProgress: z.string().optional(),
-    currentBlockers: z.string().optional(),
-    nextAction: z.string().optional(),
-    history: z.array(ProgressLogSchema)
-  }),
+  order: z.number().optional().default(0),
+  collapsed: z.boolean().optional().default(false),
+  tasks: z.array(TaskNodeSchema).default([]),
+  legacyAiHistory: z.array(ProgressLogSchema).optional(),
+  legacyAiArchive: z
+    .object({
+      lastOwner: z.enum(['SELF', 'GEMINI', 'CODEX', 'OTHER']).optional(),
+      lastStatus: z.string().optional(),
+      currentTaskDescription: z.string().optional(),
+      recentProgress: z.string().optional(),
+      currentBlockers: z.string().optional(),
+      nextAction: z.string().optional()
+    })
+    .optional(),
   createdAt: z.string(),
-  updatedAt: z.string()
+  updatedAt: z.string(),
+  status: z.enum(['TODO', 'AI_RUNNING', 'WAITING_ACCEPT', 'BLOCKED', 'DONE']).optional().default('TODO'),
+  owner: z.enum(['SELF', 'GEMINI', 'CODEX', 'OTHER']).optional().default('SELF'),
+  aiWork: z
+    .object({
+      activeStartTime: z.string().optional(),
+      currentTaskDescription: z.string().optional(),
+      recentProgress: z.string().optional(),
+      currentBlockers: z.string().optional(),
+      nextAction: z.string().optional(),
+      history: z.array(ProgressLogSchema).default([])
+    })
+    .optional()
+    .default({ history: [] })
 })
+
+export const CardSchema = ProjectSchema
+export const TaskItemSchema = TaskNodeSchema
 
 export const AppSettingsSchema = z.object({
   theme: z.enum(['light', 'dark', 'system']),
@@ -131,13 +269,23 @@ export const AppSettingsSchema = z.object({
   hasSeenTrayNotice: z.boolean()
 })
 
-export const AppDataSchema = z.object({
-  schemaVersion: z.literal(1),
-  cards: z.array(CardSchema),
-  settings: AppSettingsSchema,
-  lastModified: z.string(),
-  revision: z.number().optional()
-})
+export const AppDataSchema = z
+  .object({
+    schemaVersion: z.union([z.literal(1), z.literal(2)]).default(2),
+    projects: z.array(ProjectSchema).optional().default([]),
+    cards: z.array(ProjectSchema).optional().default([]),
+    settings: AppSettingsSchema,
+    lastModified: z.string(),
+    revision: z.number().optional()
+  })
+  .transform((val) => {
+    const list = val.projects.length > 0 ? val.projects : val.cards
+    return {
+      ...val,
+      projects: list,
+      cards: list
+    }
+  })
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',

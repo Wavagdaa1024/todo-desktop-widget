@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Card, CardStatus, OwnerType, TaskItem, ProgressLog } from '../domain/types'
+import { Card, TaskItem, TaskNode, ProgressLog } from '../domain/types'
 import {
   calculateProgress,
   addTaskToParent,
@@ -41,6 +41,7 @@ interface TaskCardProps {
   isFirst: boolean
   isLast: boolean
   onNotifyUndo?: (message: string, undoAction: () => void) => void
+  onOpenNodeDrawer?: (node: TaskNode) => void
 }
 
 export const TaskCard: React.FC<TaskCardProps> = ({
@@ -53,7 +54,8 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   onDropOrder,
   isFirst,
   isLast,
-  onNotifyUndo
+  onNotifyUndo,
+  onOpenNodeDrawer
 }) => {
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState(card.title)
@@ -120,27 +122,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     }
   }
 
-  const handleStatusChange = (newStatus: CardStatus) => {
-    if (newStatus === 'DONE') {
-      // Check if there are uncompleted leaves
-      if (progress.totalLeaves > 0 && progress.doneLeaves < progress.totalLeaves) {
-        setShowDoneConfirm(true)
-        return
-      }
-    }
 
-    if (newStatus === 'AI_RUNNING') {
-      onUpdateCard({
-        status: newStatus,
-        aiWork: {
-          ...card.aiWork,
-          activeStartTime: new Date().toISOString()
-        }
-      })
-    } else {
-      onUpdateCard({ status: newStatus })
-    }
-  }
 
   const handleConfirmBatchDone = () => {
     function completeAll(tasks: TaskItem[]): TaskItem[] {
@@ -294,16 +276,17 @@ ${taskTreeText || '(暂无子任务)'}
           onDropOrder(sourceId, card.id)
         }
       }}
+      id={`project-${card.id}`}
       className={`group relative flex flex-col bg-white dark:bg-slate-900 border rounded-xl shadow-sm transition-all hover:shadow-md w-full max-w-[420px] ${
         isDragOver ? 'ring-2 ring-blue-500 shadow-lg scale-[1.01]' : ''
       } ${
         isOverdue
           ? 'border-rose-300 dark:border-rose-800/80 ring-1 ring-rose-400/20'
-          : card.status === 'WAITING_ACCEPT'
-          ? 'border-amber-300 dark:border-amber-800/80 ring-1 ring-amber-400/20'
-          : card.status === 'AI_RUNNING'
-          ? 'border-indigo-300 dark:border-indigo-800/80 ring-1 ring-indigo-400/20'
-          : card.status === 'DONE'
+          : progress.waitingReviewLeaves > 0
+          ? 'border-purple-300 dark:border-purple-800/80 ring-1 ring-purple-400/20'
+          : progress.blockedLeaves > 0
+          ? 'border-rose-300 dark:border-rose-800/80 ring-1 ring-rose-400/20'
+          : progress.percentage === 100
           ? 'border-emerald-200 dark:border-emerald-800/40 opacity-90'
           : 'border-slate-200 dark:border-slate-800'
       }`}
@@ -482,43 +465,28 @@ ${taskTreeText || '(暂无子任务)'}
           </div>
         </div>
 
-        {/* Status & Owner & Due Date Meta Row */}
+        {/* Project Aggregate Metrics & Due Date Row */}
         <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
-          {/* Status selector */}
-          <div className="flex items-center gap-2">
-            <select
-              value={card.status}
-              onChange={(e) => handleStatusChange(e.target.value as CardStatus)}
-              className={`px-2 py-0.5 rounded font-medium text-xs border focus:outline-none transition-colors ${
-                card.status === 'TODO'
-                  ? 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
-                  : card.status === 'AI_RUNNING'
-                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/60 dark:text-indigo-300 dark:border-indigo-800'
-                  : card.status === 'WAITING_ACCEPT'
-                  ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800'
-                  : card.status === 'BLOCKED'
-                  ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/60 dark:text-rose-300 dark:border-rose-800'
-                  : 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800'
-              }`}
-            >
-              <option value="TODO">待开始</option>
-              <option value="AI_RUNNING">AI 执行中</option>
-              <option value="WAITING_ACCEPT">等待我验收</option>
-              <option value="BLOCKED">阻塞</option>
-              <option value="DONE">已完成</option>
-            </select>
-
-            {/* Owner badge */}
-            <select
-              value={card.owner}
-              onChange={(e) => onUpdateCard({ owner: e.target.value as OwnerType })}
-              className="px-1.5 py-0.5 rounded text-slate-500 dark:text-slate-400 bg-transparent border border-slate-200 dark:border-slate-700 text-xs focus:outline-none"
-            >
-              <option value="SELF">自己</option>
-              <option value="GEMINI">Gemini</option>
-              <option value="CODEX">Codex</option>
-              <option value="OTHER">其他</option>
-            </select>
+          <div className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400 font-mono">
+            <span>
+              已验收 {progress.acceptedLeaves}/{progress.totalLeaves}
+            </span>
+            <span className="text-slate-300 dark:text-slate-700">·</span>
+            <span className={progress.inProgressLeaves > 0 ? 'text-blue-600 dark:text-blue-400 font-semibold' : ''}>
+              执行中 {progress.inProgressLeaves}
+            </span>
+            <span className="text-slate-300 dark:text-slate-700">·</span>
+            <span className={progress.waitingReviewLeaves > 0 ? 'text-purple-600 dark:text-purple-400 font-semibold' : ''}>
+              待验收 {progress.waitingReviewLeaves}
+            </span>
+            {progress.blockedLeaves > 0 && (
+              <>
+                <span className="text-slate-300 dark:text-slate-700">·</span>
+                <span className="text-rose-600 dark:text-rose-400 font-semibold">
+                  阻塞 {progress.blockedLeaves}
+                </span>
+              </>
+            )}
           </div>
 
           {/* Due date badge (clickable to edit) */}
@@ -545,9 +513,7 @@ ${taskTreeText || '(暂无子任务)'}
         {/* Progress bar line */}
         <div className="mt-2">
           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mb-1 font-mono">
-            <span>
-              {progress.doneLeaves}/{progress.totalLeaves}
-            </span>
+            <span>完成率</span>
             <span className="font-semibold">{progress.percentage}%</span>
           </div>
           <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
@@ -555,32 +521,18 @@ ${taskTreeText || '(暂无子任务)'}
               className={`h-full transition-all duration-300 ${
                 progress.percentage === 100
                   ? 'bg-emerald-500'
-                  : card.status === 'AI_RUNNING'
-                  ? 'bg-indigo-500'
-                  : 'bg-blue-500'
+                  : progress.blockedLeaves > 0
+                  ? 'bg-rose-500'
+                  : progress.waitingReviewLeaves > 0
+                  ? 'bg-purple-500'
+                  : progress.inProgressLeaves > 0
+                  ? 'bg-blue-500'
+                  : 'bg-slate-300 dark:bg-slate-700'
               }`}
               style={{ width: `${progress.percentage}%` }}
             />
           </div>
         </div>
-
-        {/* High-frequency scanning lines: current task & next action (max 1 line each) */}
-        {(card.aiWork?.currentTaskDescription || card.aiWork?.nextAction) && (
-          <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800/60 space-y-0.5 text-[11px]">
-            {card.aiWork.currentTaskDescription && (
-              <div className="truncate flex items-center gap-1.5 text-slate-600 dark:text-slate-300">
-                <span className="text-slate-400 dark:text-slate-500 shrink-0 font-medium">当前:</span>
-                <span className="truncate">{card.aiWork.currentTaskDescription}</span>
-              </div>
-            )}
-            {card.aiWork.nextAction && (
-              <div className="truncate flex items-center gap-1.5 text-slate-600 dark:text-slate-300">
-                <span className="text-slate-400 dark:text-slate-500 shrink-0 font-medium">下一步:</span>
-                <span className="truncate">{card.aiWork.nextAction}</span>
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
       {/* Expanded Body: Tasks & Operations */}
@@ -593,7 +545,7 @@ ${taskTreeText || '(暂无子任务)'}
             </div>
           )}
 
-          {/* Task Tree */}
+          {/* Task Tree (Parallel Task Line) */}
           {card.tasks.length > 0 ? (
             <TaskTree
               tasks={card.tasks}
@@ -601,10 +553,11 @@ ${taskTreeText || '(暂无子任务)'}
               onAddSubtask={handleAddSubtask}
               onUpdateTask={handleUpdateTask}
               onDeleteTask={handleDeleteTask}
+              onOpenNodeDrawer={onOpenNodeDrawer}
             />
           ) : (
-            <p className="text-[11px] text-slate-400 py-1 text-center">
-              暂无子任务，点击下方添加
+            <p className="text-[11px] text-slate-400 py-2 text-center border border-dashed border-slate-200 dark:border-slate-800 rounded-lg">
+              暂无子任务，点击下方「＋ 添加任务」开始创建
             </p>
           )}
 

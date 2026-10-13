@@ -13,6 +13,20 @@
   }
 }
 
+/* Floating widget transparency rules (P0 widget fix) */
+html.widget-mode,
+body.widget-body,
+.widget-mode #root {
+  background: transparent !important;
+  background-color: transparent !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  width: 100% !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
 /* Custom subtle scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

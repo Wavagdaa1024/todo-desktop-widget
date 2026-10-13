@@ -19,10 +19,12 @@ export interface IElectronAPI {
     maximize: () => void
     close: () => void
     setAlwaysOnTop: (alwaysOnTop: boolean) => void
-    openMainBoard: () => void
+    openMainBoard: (options?: { projectId?: string; nodeId?: string }) => void
     closeWidget: () => void
     setWidgetPin: (pinned: boolean) => void
     setWidgetHeight: (height: number) => void
+    onWidgetRefresh?: (callback: () => void) => () => void
+    onNavigateToNode?: (callback: (target: { projectId?: string; nodeId?: string }) => void) => () => void
   }
   system: {
     setAutoStart: (enable: boolean) => Promise<boolean>
@@ -59,10 +61,24 @@ const api: IElectronAPI = {
     maximize: () => ipcRenderer.send('window:maximize'),
     close: () => ipcRenderer.send('window:close'),
     setAlwaysOnTop: (alwaysOnTop: boolean) => ipcRenderer.send('window:setAlwaysOnTop', alwaysOnTop),
-    openMainBoard: () => ipcRenderer.send('window:openMainBoard'),
+    openMainBoard: (options?: { projectId?: string; nodeId?: string }) => ipcRenderer.send('window:openMainBoard', options),
     closeWidget: () => ipcRenderer.send('window:closeWidget'),
     setWidgetPin: (pinned: boolean) => ipcRenderer.send('window:setWidgetPin', pinned),
-    setWidgetHeight: (height: number) => ipcRenderer.send('window:setWidgetHeight', height)
+    setWidgetHeight: (height: number) => ipcRenderer.send('window:setWidgetHeight', height),
+    onWidgetRefresh: (callback: () => void) => {
+      const listener = () => callback()
+      ipcRenderer.on('widget:refresh', listener)
+      return () => {
+        ipcRenderer.removeListener('widget:refresh', listener)
+      }
+    },
+    onNavigateToNode: (callback: (target: { projectId?: string; nodeId?: string }) => void) => {
+      const listener = (_event: any, target: { projectId?: string; nodeId?: string }) => callback(target)
+      ipcRenderer.on('navigate-to-node', listener)
+      return () => {
+        ipcRenderer.removeListener('navigate-to-node', listener)
+      }
+    }
   },
   system: {
     setAutoStart: (enable: boolean) => ipcRenderer.invoke('system:setAutoStart', enable),

@@ -1,40 +1,75 @@
-import React, { useState, useEffect, useMemo } from 'react'
-import { Card, CardStatus } from '../domain/types'
-import { calculateProgress } from '../domain/calculator'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import { Card, TaskNode, TaskNodeStatus, OwnerType } from '../domain/types'
 import {
-  Sparkles,
   Pin,
   X,
-  CheckCircle2,
-  AlertTriangle,
-  Clock,
   ArrowRight,
-  Plus
+  CheckCircle2
 } from 'lucide-react'
+
+interface PriorityTaskItem {
+  projectId: string
+  projectTitle: string
+  node: TaskNode
+  status: TaskNodeStatus
+  owner: OwnerType
+  priorityScore: number
+  latestSnippet: string
+  elapsedMinutes: number
+}
 
 export const WidgetView: React.FC = () => {
   const [cards, setCards] = useState<Card[]>([])
   const [isPinned, setIsPinned] = useState(false)
-  const [selectedHeroId, setSelectedHeroId] = useState<string | null>(null)
-  const [elapsedMinutes, setElapsedMinutes] = useState(0)
 
-  // Fetch initial data
-  useEffect(() => {
+  const loadLatestData = useCallback(() => {
     if (window.electronAPI) {
       window.electronAPI.storage.getInitialData().then((res) => {
-        setCards(res.data.cards)
+        if (res?.data?.cards) {
+          setCards(res.data.cards)
+        }
       })
     }
   }, [])
+
+  // Fetch initial data
+  useEffect(() => {
+    loadLatestData()
+  }, [loadLatestData])
 
   // Listen for real-time storage updates (event-driven IPC, zero polling)
   useEffect(() => {
     if (!window.electronAPI?.storage?.onDataUpdated) return
     const unsubscribe = window.electronAPI.storage.onDataUpdated((updatedData) => {
-      setCards(updatedData.cards)
+      setCards(updatedData.cards || updatedData.projects || [])
     })
     return () => unsubscribe()
   }, [])
+
+  // Listen for window refresh IPC event (sent when widget is toggled or focused)
+  useEffect(() => {
+    if (!window.electronAPI?.window?.onWidgetRefresh) return
+    const unsubscribe = window.electronAPI.window.onWidgetRefresh(() => {
+      loadLatestData()
+    })
+    return () => unsubscribe()
+  }, [loadLatestData])
+
+  // Refresh on window focus and visibility change
+  useEffect(() => {
+    const handleFocus = () => loadLatestData()
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        loadLatestData()
+      }
+    }
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [loadLatestData])
 
   // Esc key closes widget
   useEffect(() => {
@@ -57,314 +92,293 @@ export const WidgetView: React.FC = () => {
     window.electronAPI?.window?.closeWidget()
   }
 
-  const handleOpenMain = () => {
-    window.electronAPI?.window?.openMainBoard()
+  const handleOpenMain = (target?: { projectId?: string; nodeId?: string }) => {
+    window.electronAPI?.window?.openMainBoard(target)
   }
 
-  const handleCreateInMain = () => {
-    window.electronAPI?.window?.openMainBoard()
-  }
+  // Cross-project Priority Task Extraction & Ranking (PRD Section 7.1)
+  const { priorityTasks, counts } = useMemo(() => {
+    const allActiveNodes: PriorityTaskItem[] = []
+    let waitingReviewCount = 0
+    let blockedCount = 0
+    let inProgressCount = 0
 
-  // Determine Hero Card & Secondary Cards
-  // Default priority: WAITING_ACCEPT > BLOCKED > AI_RUNNING > TODO > DONE
-  const { heroCard, secondaryCards } = useMemo(() => {
-    if (cards.length === 0) {
-      return { heroCard: null, secondaryCards: [] }
+    function traverseTasks(tasks: TaskNode[], projectId: string, projectTitle: string) {
+      if (!Array.isArray(tasks)) return
+      for (const t of tasks) {
+        if (!t.children || t.children.length === 0) {
+          // Leaf task
+          const status: TaskNodeStatus = t.status || (t.completed ? 'ACCEPTED' : 'TODO')
+          const owner: OwnerType = t.owner || 'SELF'
+
+          if (status === 'WAITING_REVIEW') waitingReviewCount++
+          if (status === 'BLOCKED') blockedCount++
+          if (status === 'IN_PROGRESS') inProgressCount++
+
+          // Priority score: 1: WAITING_REVIEW -> 2: BLOCKED -> 3: IN_PROGRESS -> 4: TODO
+          let priorityScore = 99
+          if (status === 'WAITING_REVIEW') priorityScore = 1
+          else if (status === 'BLOCKED') priorityScore = 2
+          else if (status === 'IN_PROGRESS') priorityScore = 3
+          else if (status === 'TODO') priorityScore = 4
+
+          // Calculate elapsed minutes if IN_PROGRESS
+          let elapsed = 0
+          if (status === 'IN_PROGRESS') {
+            const currentRound = t.rounds?.[t.rounds.length - 1]
+            if (currentRound?.startTime) {
+              const startMs = new Date(currentRound.startTime).getTime()
+              elapsed = Math.max(0, Math.floor((Date.now() - startMs) / 60000))
+            }
+          }
+
+          // Extract latest snippet
+          let snippet = ''
+          if (t.events && t.events.length > 0) {
+            const last = t.events[t.events.length - 1]
+            if (status === 'WAITING_REVIEW') snippet = last.summary ? `已提交：${last.summary}` : '已提交待用户验收'
+            else if (status === 'BLOCKED') snippet = last.blockerReason ? `阻塞：${last.blockerReason}` : last.summary
+            else if (status === 'IN_PROGRESS') {
+              snippet = elapsed > 0 ? `${elapsed} 分钟` : last.summary || '执行中'
+            } else if (last.type === 'REJECTED') {
+              snippet = `需返工：${last.summary}`
+            }
+          } else if (t.notes) {
+            snippet = t.notes
+          }
+
+          // Don't show already accepted tasks in the widget priority monitor unless all completed
+          if (status !== 'ACCEPTED') {
+            allActiveNodes.push({
+              projectId,
+              projectTitle,
+              node: t,
+              status,
+              owner,
+              priorityScore,
+              latestSnippet: snippet,
+              elapsedMinutes: elapsed
+            })
+          }
+        } else {
+          traverseTasks(t.children, projectId, projectTitle)
+        }
+      }
     }
 
-    let hero: Card | undefined = undefined
-
-    // If user clicked a specific card to be hero
-    if (selectedHeroId) {
-      hero = cards.find((c) => c.id === selectedHeroId)
+    for (const card of cards) {
+      traverseTasks((card.tasks || []) as TaskNode[], card.id, card.title)
     }
 
-    if (!hero) {
-      hero =
-        cards.find((c) => c.status === 'WAITING_ACCEPT') ||
-        cards.find((c) => c.status === 'BLOCKED') ||
-        cards.find((c) => c.status === 'AI_RUNNING') ||
-        cards.find((c) => c.status === 'TODO') ||
-        cards[0]
+    // Sort by priorityScore: WAITING_REVIEW -> BLOCKED -> IN_PROGRESS (longest elapsed first) -> TODO
+    allActiveNodes.sort((a, b) => {
+      if (a.priorityScore !== b.priorityScore) {
+        return a.priorityScore - b.priorityScore
+      }
+      if (a.priorityScore === 3) {
+        return b.elapsedMinutes - a.elapsedMinutes
+      }
+      return 0
+    })
+
+    return {
+      priorityTasks: allActiveNodes.slice(0, 4),
+      counts: {
+        waitingReview: waitingReviewCount,
+        blocked: blockedCount,
+        inProgress: inProgressCount
+      }
     }
+  }, [cards])
 
-    const others = cards.filter((c) => c.id !== hero?.id).slice(0, 3)
-    return { heroCard: hero, secondaryCards: others }
-  }, [cards, selectedHeroId])
-
-  const heroProgress = heroCard ? calculateProgress(heroCard.tasks) : null
-
-  // Live timer for Hero card if AI_RUNNING
+  // Dynamically adapt widget height (Zero white space, perfectly compact)
   useEffect(() => {
-    if (!heroCard || heroCard.status !== 'AI_RUNNING' || !heroCard.aiWork?.activeStartTime) {
-      setElapsedMinutes(0)
-      return
-    }
-
-    const calcElapsed = () => {
-      const start = new Date(heroCard.aiWork.activeStartTime!).getTime()
-      const diffMs = Date.now() - start
-      setElapsedMinutes(Math.max(0, Math.floor(diffMs / 60000)))
-    }
-
-    calcElapsed()
-    const timer = setInterval(calcElapsed, 30000)
-    return () => clearInterval(timer)
-  }, [heroCard?.id, heroCard?.status, heroCard?.aiWork?.activeStartTime])
-
-  // Dynamically adapt widget height:
-  // 0 cards: ~205px
-  // 1 card: ~310px
-  // 2 cards: ~365px
-  // 3+ cards: ~420px
-  useEffect(() => {
-    let targetHeight = 205
-    if (cards.length === 1) {
-      targetHeight = 310
-    } else if (cards.length === 2) {
-      targetHeight = 365
-    } else if (cards.length >= 3) {
+    let targetHeight = 175
+    if (priorityTasks.length === 1) {
+      targetHeight = 230
+    } else if (priorityTasks.length === 2) {
+      targetHeight = 295
+    } else if (priorityTasks.length === 3) {
+      targetHeight = 360
+    } else if (priorityTasks.length >= 4) {
       targetHeight = 425
     }
 
     if (window.electronAPI?.window?.setWidgetHeight) {
       window.electronAPI.window.setWidgetHeight(targetHeight)
     }
-  }, [cards.length, secondaryCards.length])
+  }, [priorityTasks.length])
 
-  // Helper for status badge presentation
-  const renderStatusBadge = (status: CardStatus) => {
+  const renderStatusBadge = (status: TaskNodeStatus) => {
     switch (status) {
-      case 'AI_RUNNING':
+      case 'WAITING_REVIEW':
         return (
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-600 text-white shadow-sm shadow-blue-500/40">
-            AI 执行中
-          </span>
-        )
-      case 'WAITING_ACCEPT':
-        return (
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/25 text-amber-300 border border-amber-500/40">
+          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/25 text-purple-300 border border-purple-500/40 shrink-0">
             待验收
           </span>
         )
       case 'BLOCKED':
         return (
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/25 text-rose-300 border border-rose-500/40">
+          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/25 text-rose-300 border border-rose-500/40 shrink-0">
             阻塞
           </span>
         )
-      case 'DONE':
+      case 'IN_PROGRESS':
         return (
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-            已完成
+          <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-blue-600/80 text-white shrink-0">
+            执行中
           </span>
         )
       case 'TODO':
       default:
         return (
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-700/60 text-slate-300 border border-slate-600/50">
+          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-300 border border-slate-700 shrink-0">
             待开始
           </span>
         )
     }
   }
 
+  const renderOwnerBadge = (owner: OwnerType) => {
+    switch (owner) {
+      case 'GEMINI':
+        return <span className="text-indigo-400 font-medium">Gemini</span>
+      case 'CODEX':
+        return <span className="text-teal-400 font-medium">Codex</span>
+      case 'SELF':
+        return <span className="text-slate-300 font-medium">自己</span>
+      case 'OTHER':
+      default:
+        return <span className="text-amber-400 font-medium">其他</span>
+    }
+  }
+
   return (
-    <div className="w-full h-full bg-[#0f172a]/95 backdrop-blur-2xl border border-white/15 rounded-2xl p-3.5 flex flex-col justify-between text-white shadow-2xl ring-1 ring-black/40 select-none overflow-hidden font-sans">
-      {/* 1. Top Header Bar (Single compact line, drag region) */}
-      <div
-        className="flex items-center justify-between pb-2 cursor-move select-none"
-        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-      >
-        <div className="flex items-center gap-2">
-          <div className="w-5 h-5 rounded-md bg-blue-600 flex items-center justify-center text-white text-[11px] font-bold shadow-sm shadow-blue-500/40">
-            ✓
+    <div className="w-full h-full bg-[#0f172a] border border-white/15 rounded-2xl p-3 flex flex-col justify-between text-white shadow-2xl ring-1 ring-black/40 select-none overflow-hidden font-sans">
+      {/* 1. Header Bar: Title, Pin, Close */}
+      <div className="pb-2 border-b border-white/10 select-none space-y-1">
+        <div className="flex items-center justify-between">
+          <div
+            className="flex items-center gap-2 flex-1 cursor-move"
+            style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+          >
+            <div className="w-4 h-4 rounded bg-blue-600 flex items-center justify-center text-white text-[10px] font-bold pointer-events-none">
+              ✓
+            </div>
+            <span className="font-bold text-xs tracking-wide text-slate-100 pointer-events-none">
+              AI Task Board
+            </span>
           </div>
-          <span className="font-bold text-xs tracking-wide text-slate-100">
-            AI Task Board
-          </span>
+
+          <div
+            className="flex items-center gap-1 shrink-0"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          >
+            <button
+              type="button"
+              onClick={handleTogglePin}
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              className={`p-1 rounded transition-colors cursor-pointer ${
+                isPinned
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-white/10'
+              }`}
+              title={isPinned ? '取消固定' : '固定置顶'}
+            >
+              <Pin className="w-3.5 h-3.5 pointer-events-none" />
+            </button>
+            <button
+              type="button"
+              onClick={handleClose}
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              className="p-1 rounded text-slate-400 hover:text-slate-200 hover:bg-white/10 transition-colors cursor-pointer"
+              title="隐藏小窗"
+            >
+              <X className="w-3.5 h-3.5 pointer-events-none" />
+            </button>
+          </div>
         </div>
 
-        <div
-          className="flex items-center gap-1"
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-        >
-          <button
-            onClick={handleTogglePin}
-            className={`p-1.5 rounded-lg transition-colors ${
-              isPinned
-                ? 'bg-blue-600 text-white shadow-sm shadow-blue-500/30'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-white/10'
-            }`}
-            title={isPinned ? '取消固定' : '固定置顶'}
-          >
-            <Pin className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={handleClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-white/10 transition-colors"
-            title="隐藏小窗"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
+        {/* Counter Summary Pill (PRD Section 7.2) */}
+        <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono pt-0.5">
+          <span className={counts.waitingReview > 0 ? 'text-purple-300 font-semibold' : ''}>
+            待验收 {counts.waitingReview}
+          </span>
+          <span className="text-slate-600">·</span>
+          <span className={counts.blocked > 0 ? 'text-rose-300 font-semibold' : ''}>
+            阻塞 {counts.blocked}
+          </span>
+          <span className="text-slate-600">·</span>
+          <span className={counts.inProgress > 0 ? 'text-blue-300 font-semibold' : ''}>
+            执行中 {counts.inProgress}
+          </span>
         </div>
       </div>
 
-      {/* 2. Main Body: Hero Card + Secondary Cards OR Clean Empty State */}
-      <div className="flex-1 space-y-2.5 overflow-hidden my-0.5">
-        {heroCard ? (
-          <>
-            {/* 2.1 Hero Focused Task Card */}
-            <div className="bg-[#182640] border border-blue-400/25 rounded-xl p-3 space-y-2 shadow-lg shadow-black/30">
-              {/* Title row */}
-              <div className="flex items-start justify-between gap-2">
-                <h3
-                  className="font-bold text-sm text-white line-clamp-2 leading-snug flex-1"
-                  title={heroCard.title}
-                >
-                  {heroCard.title}
-                </h3>
+      {/* 2. Priority Task Nodes List */}
+      <div className="flex-1 space-y-1.5 overflow-hidden my-2">
+        {priorityTasks.length === 0 ? (
+          <div className="py-6 text-center text-xs text-slate-400 space-y-1">
+            <CheckCircle2 className="w-6 h-6 text-emerald-400 mx-auto" />
+            <p className="font-medium text-slate-300">全部任务已完成或暂无待办</p>
+            <p className="text-[11px] text-slate-500">点击下方按钮可在主工作台创建新任务</p>
+          </div>
+        ) : (
+          priorityTasks.map((item) => (
+            <div
+              key={item.node.id}
+              onClick={() => handleOpenMain({ projectId: item.projectId, nodeId: item.node.id })}
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              className={`p-2.5 rounded-xl border transition-all cursor-pointer group ${
+                item.status === 'WAITING_REVIEW'
+                  ? 'bg-purple-950/30 border-purple-800/50 hover:bg-purple-950/50 hover:border-purple-600'
+                  : item.status === 'BLOCKED'
+                  ? 'bg-rose-950/30 border-rose-800/50 hover:bg-rose-950/50 hover:border-rose-600'
+                  : 'bg-slate-800/60 border-slate-700/60 hover:bg-slate-800 hover:border-slate-600'
+              }`}
+            >
+              {/* Row Line 1: Title + Status Badge */}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-slate-100 truncate group-hover:text-blue-300 transition-colors">
+                  {item.node.title}
+                </span>
+                {renderStatusBadge(item.status)}
               </div>
 
-              {/* Agent & Status line */}
-              <div className="flex items-center justify-between gap-2 pt-0.5">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[11px] font-medium text-blue-300 flex items-center gap-1">
-                    <Sparkles className="w-3 h-3 text-blue-400" />
-                    <span>{heroCard.owner}</span>
-                  </span>
-                  {renderStatusBadge(heroCard.status)}
-                </div>
-
-                {heroCard.status === 'AI_RUNNING' && elapsedMinutes > 0 && (
-                  <span className="text-[10px] text-blue-300/90 font-mono flex items-center gap-1">
-                    <Clock className="w-3 h-3 text-blue-400 animate-pulse" />
-                    <span>已等待 {elapsedMinutes}m</span>
-                  </span>
+              {/* Row Line 2: Project + Owner + Snippet / Timer */}
+              <div className="flex items-center gap-1.5 text-[11px] text-slate-400 pt-1 truncate">
+                <span className="text-slate-300 font-medium truncate max-w-[110px]">
+                  {item.projectTitle}
+                </span>
+                <span>·</span>
+                {renderOwnerBadge(item.owner)}
+                {item.latestSnippet && (
+                  <>
+                    <span>·</span>
+                    <span className="truncate text-slate-400 text-[10px]">
+                      {item.latestSnippet}
+                    </span>
+                  </>
                 )}
               </div>
-
-              {/* Progress bar line */}
-              <div className="space-y-1 pt-0.5">
-                <div className="flex items-center justify-between text-[11px] text-slate-300 font-mono">
-                  <span>
-                    {heroProgress?.doneLeaves}/{heroProgress?.totalLeaves} 完成
-                  </span>
-                  <span className="font-bold text-white">{heroProgress?.percentage || 0}%</span>
-                </div>
-                <div className="w-full h-1.5 bg-slate-700/80 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all duration-300 ${
-                      heroProgress?.percentage === 100
-                        ? 'bg-emerald-500'
-                        : heroCard.status === 'WAITING_ACCEPT'
-                        ? 'bg-amber-500'
-                        : heroCard.status === 'BLOCKED'
-                        ? 'bg-rose-500'
-                        : 'bg-blue-500'
-                    }`}
-                    style={{ width: `${heroProgress?.percentage || 0}%` }}
-                  />
-                </div>
-              </div>
-
-              {/* Single-line Current task & Next Action summaries */}
-              {(heroCard.aiWork?.currentTaskDescription || heroCard.aiWork?.nextAction) && (
-                <div className="pt-1.5 border-t border-white/10 space-y-0.5 text-xs">
-                  {heroCard.aiWork.currentTaskDescription && (
-                    <div className="truncate flex items-center gap-1.5 text-slate-300">
-                      <span className="text-slate-400 shrink-0 font-medium text-[11px]">当前:</span>
-                      <span className="truncate text-slate-200">{heroCard.aiWork.currentTaskDescription}</span>
-                    </div>
-                  )}
-                  {heroCard.aiWork.nextAction && (
-                    <div className="truncate flex items-center gap-1.5 text-slate-300">
-                      <span className="text-slate-400 shrink-0 font-medium text-[11px]">下一步:</span>
-                      <span className="truncate text-slate-200">{heroCard.aiWork.nextAction}</span>
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
-
-            {/* 2.2 Secondary Task Items (Max 2~3 rows, click to switch hero) */}
-            {secondaryCards.length > 0 && (
-              <div className="space-y-1.5">
-                {secondaryCards.map((item) => {
-                  const prog = calculateProgress(item.tasks)
-                  return (
-                    <div
-                      key={item.id}
-                      onClick={() => setSelectedHeroId(item.id)}
-                      className="bg-[#142036]/80 hover:bg-[#1a2b48] border border-white/10 hover:border-blue-400/30 rounded-xl px-2.5 py-1.5 flex items-center justify-between text-xs transition-all cursor-pointer group"
-                      title="点击将此任务切换为重点展示"
-                    >
-                      {/* Left: Icon / Title */}
-                      <div className="flex items-center gap-1.5 flex-1 min-w-0 pr-2">
-                        {item.status === 'DONE' ? (
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        ) : item.status === 'BLOCKED' ? (
-                          <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                        ) : (
-                          <div className="w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0 ml-1" />
-                        )}
-                        <span className="text-slate-200 font-medium truncate text-xs">
-                          {item.title}
-                        </span>
-                      </div>
-
-                      {/* Right: Percent + Status Pill */}
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span className="text-slate-400 font-mono text-[11px]">
-                          {prog.percentage}%
-                        </span>
-                        {renderStatusBadge(item.status)}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </>
-        ) : (
-          /* Clean, Compact Empty State (~200px total window height) */
-          <div className="py-5 text-center flex flex-col items-center justify-center space-y-2">
-            <div className="w-10 h-10 rounded-xl bg-blue-500/20 border border-blue-400/30 flex items-center justify-center text-blue-400 shadow-inner">
-              <CheckCircle2 className="w-5 h-5 text-blue-400" />
-            </div>
-            <div className="space-y-0.5">
-              <p className="font-semibold text-white text-xs">还没有任务</p>
-              <p className="text-[11px] text-slate-400 max-w-[240px]">
-                创建任务后，这里会显示 AI 的工作状态
-              </p>
-            </div>
-            <button
-              onClick={handleCreateInMain}
-              className="mt-1 flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-medium shadow-sm shadow-blue-500/30 transition-all active:scale-95"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>创建第一个任务</span>
-            </button>
-          </div>
+          ))
         )}
       </div>
 
-      {/* 3. Bottom Action Bar: "查看全部 →" */}
-      <div className="pt-2 border-t border-white/10 flex items-center gap-2">
+      {/* 3. Bottom Action Bar: Open Main Board */}
+      <div
+        className="pt-1.5 border-t border-white/10"
+        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      >
         <button
-          onClick={handleOpenMain}
-          className="flex-1 bg-[#1a273f]/90 hover:bg-[#233556] border border-white/15 hover:border-blue-400/40 rounded-xl py-1.5 px-3 flex items-center justify-center gap-1.5 text-xs text-slate-200 font-medium transition-all active:scale-[0.98]"
+          type="button"
+          onClick={() => handleOpenMain()}
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          className="w-full py-1.5 px-3 rounded-lg bg-white/5 hover:bg-white/10 active:bg-white/15 text-slate-200 text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer border border-white/5 hover:border-white/10"
         >
-          <span>查看全部</span>
-          <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
-        </button>
-
-        <button
-          onClick={handleCreateInMain}
-          className="p-1.5 bg-blue-600/80 hover:bg-blue-600 border border-blue-500/50 rounded-xl text-white transition-colors"
-          title="打开主窗口创建新卡片"
-        >
-          <Plus className="w-3.5 h-3.5" />
+          <span>打开完整工作台</span>
+          <ArrowRight className="w-3.5 h-3.5 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
         </button>
       </div>
     </div>

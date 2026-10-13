@@ -5,6 +5,7 @@ describe('Storage Domain & Validation', () => {
   it('validates a complete valid AppData object', () => {
     const validData: AppData = {
       schemaVersion: 1,
+      projects: [],
       cards: [
         {
           id: 'card-1',
@@ -48,7 +49,7 @@ describe('Storage Domain & Validation', () => {
 
   it('rejects data with invalid schema version', () => {
     const invalid = {
-      schemaVersion: 2, // only version 1 supported currently
+      schemaVersion: 999, // unsupported schema version
       cards: [],
       settings: DEFAULT_SETTINGS,
       lastModified: '2026'

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
-import { Card, AppData, DEFAULT_SETTINGS } from './domain/types'
+import { Card, AppData, DEFAULT_SETTINGS, TaskNode } from './domain/types'
 import { Header, FilterStatus, SortOption } from './components/Header'
 import { TaskCard } from './components/TaskCard'
+import { TaskNodeDrawer } from './components/TaskNodeDrawer'
 import { SettingsModal } from './components/SettingsModal'
 import { isCardOverdue } from './domain/date'
 import { reorderCards } from './domain/calculator'
@@ -9,7 +10,8 @@ import { Plus, Undo2, AlertTriangle, CheckCircle2 } from 'lucide-react'
 
 export const App: React.FC = () => {
   const [data, setData] = useState<AppData>({
-    schemaVersion: 1,
+    schemaVersion: 2,
+    projects: [],
     cards: [],
     settings: { ...DEFAULT_SETTINGS },
     lastModified: new Date().toISOString()
@@ -23,6 +25,7 @@ export const App: React.FC = () => {
   const [isLoaded, setIsLoaded] = useState(false)
   const [isRecoveryMode, setIsRecoveryMode] = useState(false)
   const [undoToast, setUndoToast] = useState<{ message: string; action: () => void } | null>(null)
+  const [drawerTarget, setDrawerTarget] = useState<{ projectId: string; nodeId: string } | null>(null)
   const isRemoteUpdate = useRef(false)
   const pendingDataRef = useRef<AppData | null>(null)
   const saveTimerRef = useRef<NodeJS.Timeout | null>(null)
@@ -206,6 +209,95 @@ export const App: React.FC = () => {
     })
     return () => unsubscribe()
   }, [])
+
+  // Listen for deep link navigation to specific node from Widget (PRD Section 7.1)
+  useEffect(() => {
+    if (!window.electronAPI?.window?.onNavigateToNode) return
+    const unsubscribe = window.electronAPI.window.onNavigateToNode((target: { projectId?: string; nodeId?: string }) => {
+      if (target.projectId) {
+        if (target.nodeId) {
+          setDrawerTarget({ projectId: target.projectId, nodeId: target.nodeId })
+        }
+        setTimeout(() => {
+          const elem = document.getElementById(`project-${target.projectId}`)
+          elem?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }, 100)
+      }
+    })
+    return () => unsubscribe()
+  }, [])
+
+  const handleUpdateTaskNode = (projectId: string, updatedNode: TaskNode) => {
+    setData((prev) => {
+      function replaceNode(tasks: TaskNode[]): TaskNode[] {
+        return tasks.map((t) => {
+          if (t.id === updatedNode.id) {
+            return updatedNode
+          }
+          if (t.children && t.children.length > 0) {
+            return { ...t, children: replaceNode(t.children) }
+          }
+          return t
+        })
+      }
+
+      const nextRevision = (prev.revision || 0) + 1
+      currentRevisionRef.current = nextRevision
+      const nextCards = prev.cards.map((c) => {
+        if (c.id === projectId) {
+          const updatedTasks = replaceNode(c.tasks as TaskNode[])
+          return {
+            ...c,
+            tasks: updatedTasks,
+            updatedAt: new Date().toISOString()
+          }
+        }
+        return c
+      })
+
+      return {
+        ...prev,
+        cards: nextCards,
+        projects: nextCards,
+        revision: nextRevision,
+        lastModified: new Date().toISOString()
+      }
+    })
+  }
+
+  const handleDeleteTaskNode = (projectId: string, nodeId: string) => {
+    setData((prev) => {
+      function filterNode(tasks: TaskNode[]): TaskNode[] {
+        return tasks
+          .filter((t) => t.id !== nodeId)
+          .map((t) => ({
+            ...t,
+            children: t.children ? filterNode(t.children) : []
+          }))
+      }
+
+      const nextRevision = (prev.revision || 0) + 1
+      currentRevisionRef.current = nextRevision
+      const nextCards = prev.cards.map((c) => {
+        if (c.id === projectId) {
+          return {
+            ...c,
+            tasks: filterNode(c.tasks as TaskNode[]),
+            updatedAt: new Date().toISOString()
+          }
+        }
+        return c
+      })
+
+      return {
+        ...prev,
+        cards: nextCards,
+        projects: nextCards,
+        revision: nextRevision,
+        lastModified: new Date().toISOString()
+      }
+    })
+  }
 
   // Card Operations
   const handleAddNewCard = () => {
@@ -638,6 +730,7 @@ export const App: React.FC = () => {
                   setUndoToast({ message: msg, action })
                   setTimeout(() => setUndoToast(null), 6000)
                 }}
+                onOpenNodeDrawer={(node) => setDrawerTarget({ projectId: card.id, nodeId: node.id })}
               />
             ))}
           </div>
@@ -743,6 +836,38 @@ export const App: React.FC = () => {
           }}
         />
       )}
+
+      {/* Task Node Execution & Review Drawer (PRD Section 4.2 & 6) */}
+      {(() => {
+        if (!drawerTarget) return null
+        const activeProject = data.cards.find((c) => c.id === drawerTarget.projectId)
+        if (!activeProject) return null
+
+        function findNodeInTree(list: TaskNode[], id: string): TaskNode | null {
+          for (const item of list) {
+            if (item.id === id) return item
+            if (item.children && item.children.length > 0) {
+              const found = findNodeInTree(item.children, id)
+              if (found) return found
+            }
+          }
+          return null
+        }
+
+        const activeNode = findNodeInTree(activeProject.tasks as TaskNode[], drawerTarget.nodeId)
+        if (!activeNode) return null
+
+        return (
+          <TaskNodeDrawer
+            project={activeProject}
+            node={activeNode}
+            isOpen={true}
+            onClose={() => setDrawerTarget(null)}
+            onUpdateNode={(updated) => handleUpdateTaskNode(activeProject.id, updated)}
+            onDeleteNode={(nodeId) => handleDeleteTaskNode(activeProject.id, nodeId)}
+          />
+        )
+      })()}
     </div>
   )
 }

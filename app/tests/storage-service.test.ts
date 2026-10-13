@@ -11,6 +11,7 @@ describe('StorageService (P0 & P1-07 Regression Tests)', () => {
 
   const sampleData: AppData = {
     schemaVersion: 1,
+    projects: [],
     cards: [
       {
         id: 'c-1',
@@ -89,6 +90,7 @@ describe('StorageService (P0 & P1-07 Regression Tests)', () => {
     // Attempting auto-save with empty fallback must be BLOCKED!
     const emptyFallback: AppData = {
       schemaVersion: 1,
+      projects: [],
       cards: [],
       settings: DEFAULT_SETTINGS,
       lastModified: new Date().toISOString()

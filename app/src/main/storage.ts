@@ -12,8 +12,9 @@ import {
   statSync
 } from 'fs'
 import { AppData, AppDataSchema, DEFAULT_SETTINGS, StorageInitialResult } from '../renderer/src/domain/types'
+import { isSchemaV1, migrateV1ToV2 } from '../renderer/src/domain/migration'
 
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 const DATA_FILE_NAME = 'tasks_data.json'
 const MAX_BACKUPS = 5
 const BACKUP_INTERVAL_MS = 5 * 60 * 1000 // 5 minutes rate-limit for automatic backups
@@ -75,6 +76,7 @@ export class StorageService {
     if (!existsSync(this.dataFilePath)) {
       const initial: AppData = {
         schemaVersion: SCHEMA_VERSION,
+        projects: [],
         cards: [],
         settings: { ...DEFAULT_SETTINGS },
         lastModified: new Date().toISOString()
@@ -86,7 +88,30 @@ export class StorageService {
     try {
       const content = readFileSync(this.dataFilePath, 'utf-8')
       const parsed = JSON.parse(content)
+
+      // Auto-migrate if Schema V1
+      if (isSchemaV1(parsed)) {
+        console.warn('Detected Schema v1 data file. Performing pre-migration backup and upgrading to v2...')
+        const v1BackupPath = join(
+          this.userDataPath,
+          `tasks_data_v1_backup_${Date.now()}.json`
+        )
+        try {
+          copyFileSync(this.dataFilePath, v1BackupPath)
+        } catch (bkErr) {
+          console.warn('Failed to write explicit v1 backup snapshot:', bkErr)
+        }
+
+        const migrated = migrateV1ToV2(parsed)
+        this.saveDirect(migrated)
+        this.recoveryRequired = false
+        return { data: migrated, recoveryRequired: false }
+      }
+
       const validated = AppDataSchema.parse(parsed)
+      if (!validated.cards) {
+        validated.cards = validated.projects
+      }
       this.recoveryRequired = false
       return { data: validated, recoveryRequired: false }
     } catch (err) {
@@ -108,7 +133,15 @@ export class StorageService {
         try {
           const backupContent = readFileSync(backup.path, 'utf-8')
           const backupParsed = JSON.parse(backupContent)
-          const backupValidated = AppDataSchema.parse(backupParsed)
+          let backupValidated: AppData
+          if (isSchemaV1(backupParsed)) {
+            backupValidated = migrateV1ToV2(backupParsed)
+          } else {
+            backupValidated = AppDataSchema.parse(backupParsed)
+            if (!backupValidated.cards) {
+              backupValidated.cards = backupValidated.projects
+            }
+          }
           console.warn(`Recovered data from valid backup: ${backup.name}`)
           this.saveDirect(backupValidated)
           this.recoveryRequired = false
@@ -128,6 +161,7 @@ export class StorageService {
       this.recoveryRequired = true
       const fallback: AppData = {
         schemaVersion: SCHEMA_VERSION,
+        projects: [],
         cards: [],
         settings: { ...DEFAULT_SETTINGS },
         lastModified: new Date().toISOString()
@@ -207,6 +241,7 @@ export class StorageService {
   public async initializeCleanAfterCorruption(): Promise<AppData> {
     const cleanData: AppData = {
       schemaVersion: SCHEMA_VERSION,
+      projects: [],
       cards: [],
       settings: { ...DEFAULT_SETTINGS },
       lastModified: new Date().toISOString()
@@ -284,6 +319,12 @@ export class StorageService {
   }
 
   private async writeAtomicWithBackup(data: AppData, forceBackup: boolean = false): Promise<void> {
+    if (!data.cards && data.projects) {
+      data.cards = data.projects
+    }
+    if (!data.projects && data.cards) {
+      data.projects = data.cards
+    }
     // Validate schema before writing to disk
     AppDataSchema.parse(data)
 
@@ -316,7 +357,9 @@ export class StorageService {
       const currentContent = readFileSync(this.dataFilePath, 'utf-8')
       try {
         const parsed = JSON.parse(currentContent)
-        AppDataSchema.parse(parsed)
+        if (!isSchemaV1(parsed)) {
+          AppDataSchema.parse(parsed)
+        }
       } catch {
         // If current file is somehow invalid, do NOT copy it over valid backups!
         console.warn('Skipping backup rotation: current file is invalid JSON')
@@ -413,7 +456,15 @@ export class StorageService {
 
     const content = readFileSync(resolvedPath, 'utf-8')
     const parsed = JSON.parse(content)
-    const validated = AppDataSchema.parse(parsed)
+    let validated: AppData
+    if (isSchemaV1(parsed)) {
+      validated = migrateV1ToV2(parsed)
+    } else {
+      validated = AppDataSchema.parse(parsed)
+      if (!validated.cards) {
+        validated.cards = validated.projects
+      }
+    }
 
     await this.flush()
     this.recoveryRequired = false
@@ -426,7 +477,15 @@ export class StorageService {
 
   public async importData(jsonContent: string): Promise<AppData> {
     const parsed = JSON.parse(jsonContent)
-    const validated = AppDataSchema.parse(parsed)
+    let validated: AppData
+    if (isSchemaV1(parsed)) {
+      validated = migrateV1ToV2(parsed)
+    } else {
+      validated = AppDataSchema.parse(parsed)
+      if (!validated.cards) {
+        validated.cards = validated.projects
+      }
+    }
 
     await this.flush()
 
@@ -455,7 +514,8 @@ export class StorageService {
     if (!existsSync(this.dataFilePath)) {
       return JSON.stringify(
         {
-          schemaVersion: 1,
+          schemaVersion: 2,
+          projects: [],
           cards: [],
           settings: DEFAULT_SETTINGS,
           lastModified: new Date().toISOString()

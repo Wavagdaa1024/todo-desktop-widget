@@ -122,6 +122,8 @@ function createMainWindow(): void {
   }
 }
 
+let blurHideTimer: NodeJS.Timeout | null = null
+
 function createWidgetWindow(height = 420): void {
   const { x, y } = calculateWidgetPosition(height)
   const widgetWidth = 350
@@ -135,6 +137,7 @@ function createWidgetWindow(height = 420): void {
     show: false,
     frame: false,
     transparent: true,
+    backgroundColor: '#00000000',
     resizable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
@@ -149,9 +152,22 @@ function createWidgetWindow(height = 420): void {
   })
 
   widgetWindow.on('blur', () => {
-    if (!isWidgetPinned && widgetWindow?.isVisible()) {
-      widgetWindow.hide()
+    if (!isWidgetPinned && widgetWindow && !widgetWindow.isDestroyed() && widgetWindow.isVisible()) {
+      if (blurHideTimer) clearTimeout(blurHideTimer)
+      blurHideTimer = setTimeout(() => {
+        if (!isWidgetPinned && widgetWindow && !widgetWindow.isDestroyed() && !widgetWindow.isFocused()) {
+          widgetWindow.hide()
+        }
+      }, 150)
     }
+  })
+
+  widgetWindow.on('focus', () => {
+    if (blurHideTimer) {
+      clearTimeout(blurHideTimer)
+      blurHideTimer = null
+    }
+    widgetWindow?.webContents.send('widget:refresh')
   })
 
   widgetWindow.on('closed', () => {
@@ -179,6 +195,7 @@ function toggleWidgetWindow(): void {
     widgetWindow.setPosition(x, y)
     widgetWindow.show()
     widgetWindow.focus()
+    widgetWindow.webContents.send('widget:refresh')
   }
 }
 
@@ -312,8 +329,9 @@ function checkAiTimeouts(): void {
   const now = Date.now()
   const notifiedRounds = storageService.getNotifiedRounds()
 
-  for (const card of initial.data.cards) {
-    if (card.status === 'AI_RUNNING' && card.aiWork.activeStartTime) {
+  const cardList = initial.data.projects || initial.data.cards || []
+  for (const card of cardList) {
+    if (card.status === 'AI_RUNNING' && card.aiWork?.activeStartTime) {
       const startTime = new Date(card.aiWork.activeStartTime).getTime()
       const elapsedMs = now - startTime
       const roundKey = `${card.id}_${card.aiWork.activeStartTime}`
@@ -448,7 +466,7 @@ ipcMain.on('window:setAlwaysOnTop', (_, alwaysOnTop: boolean) => {
   mainWindow?.setAlwaysOnTop(alwaysOnTop)
 })
 
-ipcMain.on('window:openMainBoard', () => {
+ipcMain.on('window:openMainBoard', (_, target?: { projectId?: string; nodeId?: string }) => {
   if (!mainWindow || mainWindow.isDestroyed()) {
     createMainWindow()
   }
@@ -456,6 +474,9 @@ ipcMain.on('window:openMainBoard', () => {
     if (mainWindow.isMinimized()) mainWindow.restore()
     if (!mainWindow.isVisible()) mainWindow.show()
     mainWindow.focus()
+    if (target && (target.projectId || target.nodeId)) {
+      mainWindow.webContents.send('navigate-to-node', target)
+    }
   }
 
   // Dual window requirement: unpinned widget hides when opening main board
