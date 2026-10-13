@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import type {
   Project,
   TaskNode,
@@ -28,7 +28,9 @@ import {
   ChevronRight,
   ShieldCheck,
   Send,
-  Terminal
+  Terminal,
+  CornerDownRight,
+  Layers
 } from 'lucide-react'
 
 interface TaskNodeDrawerProps {
@@ -38,6 +40,7 @@ interface TaskNodeDrawerProps {
   onClose: () => void
   onUpdateNode: (updatedNode: TaskNode) => void
   onDeleteNode: (nodeId: string) => void
+  onSelectNode?: (node: TaskNode) => void
 }
 
 export const TaskNodeDrawer: React.FC<TaskNodeDrawerProps> = ({
@@ -46,7 +49,8 @@ export const TaskNodeDrawer: React.FC<TaskNodeDrawerProps> = ({
   isOpen,
   onClose,
   onUpdateNode,
-  onDeleteNode
+  onDeleteNode,
+  onSelectNode
 }) => {
   const [currentNode, setCurrentNode] = useState<TaskNode>(node)
   const [isEditingTitle, setIsEditingTitle] = useState(false)
@@ -55,6 +59,10 @@ export const TaskNodeDrawer: React.FC<TaskNodeDrawerProps> = ({
   const [isEditingAcceptance, setIsEditingAcceptance] = useState(false)
   const [notesDraft, setNotesDraft] = useState(node.notes || '')
   const [isEditingNotes, setIsEditingNotes] = useState(false)
+
+  // Subtask management state
+  const [newSubtaskTitle, setNewSubtaskTitle] = useState('')
+  const [showAddSubtaskInput, setShowAddSubtaskInput] = useState(false)
 
   // In-place inline action forms (NO nested modal popups!)
   const [inlineAction, setInlineAction] = useState<
@@ -72,6 +80,27 @@ export const TaskNodeDrawer: React.FC<TaskNodeDrawerProps> = ({
   const [copiedPrompt, setCopiedPrompt] = useState(false)
   const [elapsedMinutes, setElapsedMinutes] = useState(0)
 
+  // Find parent task if this node is a subtask
+  const parentNode = useMemo(() => {
+    if (!currentNode.parentId) return null
+    function findInTree(list: TaskNode[]): TaskNode | null {
+      for (const item of list) {
+        if (item.id === currentNode.parentId) return item
+        if (item.children && item.children.length > 0) {
+          const res = findInTree(item.children as TaskNode[])
+          if (res) return res
+        }
+      }
+      return null
+    }
+    return findInTree((project.tasks || []) as TaskNode[])
+  }, [currentNode.parentId, project.tasks])
+
+  const subtasks = (currentNode.children || []) as TaskNode[]
+  const acceptedSubtaskCount = subtasks.filter(
+    (s) => s.status === 'ACCEPTED' || Boolean(s.completed)
+  ).length
+
   // Keep local state synced when node prop changes
   useEffect(() => {
     setCurrentNode(node)
@@ -80,6 +109,8 @@ export const TaskNodeDrawer: React.FC<TaskNodeDrawerProps> = ({
     setNotesDraft(node.notes || '')
     setSelectedOwner(node.owner || 'SELF')
     setInlineAction('NONE')
+    setShowAddSubtaskInput(false)
+    setNewSubtaskTitle('')
   }, [node])
 
   // Track elapsed minutes when IN_PROGRESS
@@ -220,8 +251,16 @@ export const TaskNodeDrawer: React.FC<TaskNodeDrawerProps> = ({
   const handleToggleComplete = () => {
     const nextDone = !isDone
     const now = new Date().toISOString()
+    const nextChildren = (currentNode.children || []).map((c) => ({
+      ...c,
+      completed: nextDone,
+      status: (nextDone ? 'ACCEPTED' : 'TODO') as TaskNodeStatus,
+      completedAt: nextDone ? now : undefined,
+      updatedAt: now
+    }))
     const updated: TaskNode = {
       ...currentNode,
+      children: nextChildren,
       completed: nextDone,
       status: nextDone ? 'ACCEPTED' : 'TODO',
       completedAt: nextDone ? now : undefined,
@@ -233,12 +272,90 @@ export const TaskNodeDrawer: React.FC<TaskNodeDrawerProps> = ({
           timestamp: now,
           source: 'SELF',
           type: nextDone ? 'ACCEPTED' : 'RESUMED',
-          summary: nextDone ? '快捷勾选标记完成' : '取消完成标记，恢复待开始'
+          summary:
+            nextChildren.length > 0
+              ? nextDone
+                ? '快捷标记完成全部子任务'
+                : '恢复全部子任务为待开始'
+              : nextDone
+              ? '快捷勾选标记完成'
+              : '取消完成标记，恢复待开始'
         }
       ],
       updatedAt: now
     }
     commitUpdate(updated)
+  }
+
+  const handleSaveNewSubtask = () => {
+    const trimmed = newSubtaskTitle.trim()
+    if (!trimmed) return
+    const now = new Date().toISOString()
+    const newId = `task_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+    const newChild: TaskNode = {
+      id: newId,
+      title: trimmed,
+      status: 'TODO',
+      owner: 'SELF',
+      order: subtasks.length,
+      parentId: currentNode.id,
+      parents: [currentNode.id],
+      children: [],
+      rounds: [],
+      events: [
+        {
+          id: `evt_${Date.now()}`,
+          roundId: `round_${Date.now()}`,
+          timestamp: now,
+          source: 'SELF',
+          type: 'ASSIGNED',
+          summary: `作为「${currentNode.title}」的子任务创建`
+        }
+      ],
+      createdAt: now,
+      updatedAt: now,
+      completed: false
+    }
+
+    const updatedCurrent: TaskNode = {
+      ...currentNode,
+      children: [...subtasks, newChild],
+      updatedAt: now
+    }
+    commitUpdate(updatedCurrent)
+    setNewSubtaskTitle('')
+    setShowAddSubtaskInput(false)
+  }
+
+  const handleToggleSubtask = (subId: string) => {
+    const nextChildren = subtasks.map((s) => {
+      if (s.id !== subId) return s
+      const isSubDone = s.status === 'ACCEPTED' || Boolean(s.completed)
+      const now = new Date().toISOString()
+      return {
+        ...s,
+        completed: !isSubDone,
+        status: (!isSubDone ? 'ACCEPTED' : 'TODO') as TaskNodeStatus,
+        completedAt: !isSubDone ? now : undefined,
+        updatedAt: now
+      }
+    })
+    const updatedCurrent: TaskNode = {
+      ...currentNode,
+      children: nextChildren,
+      updatedAt: new Date().toISOString()
+    }
+    commitUpdate(updatedCurrent)
+  }
+
+  const handleDeleteSubtask = (subId: string) => {
+    const nextChildren = subtasks.filter((s) => s.id !== subId)
+    const updatedCurrent: TaskNode = {
+      ...currentNode,
+      children: nextChildren,
+      updatedAt: new Date().toISOString()
+    }
+    commitUpdate(updatedCurrent)
   }
 
   // Copy Context Prompt for Agent
@@ -405,6 +522,25 @@ export const TaskNodeDrawer: React.FC<TaskNodeDrawerProps> = ({
 
       {/* 2. Scrollable Body */}
       <div className="flex-1 overflow-y-auto p-3.5 space-y-4 text-xs">
+        {/* If Subtask: Parent Task Breadcrumb Link */}
+        {parentNode && (
+          <div className="flex items-center justify-between p-2.5 rounded-xl bg-blue-50/70 dark:bg-blue-950/40 border border-blue-200/60 dark:border-blue-900/50 text-xs">
+            <div className="flex items-center gap-1.5 min-w-0 text-blue-700 dark:text-blue-300">
+              <CornerDownRight className="w-3.5 h-3.5 shrink-0" />
+              <span className="opacity-75 shrink-0">所属父任务：</span>
+              <span className="font-bold truncate">「{parentNode.title}」</span>
+            </div>
+            {onSelectNode && (
+              <button
+                onClick={() => onSelectNode(parentNode)}
+                className="text-[11px] text-blue-600 dark:text-blue-400 font-semibold hover:underline shrink-0 ml-1.5"
+              >
+                查看父任务 →
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Status & Owner Bar */}
         <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800">
           <div className="flex items-center gap-2">
@@ -812,6 +948,118 @@ export const TaskNodeDrawer: React.FC<TaskNodeDrawerProps> = ({
               </div>
             )}
           </div>
+        </div>
+
+        {/* Subtask Breakdown Section */}
+        <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5 font-bold text-slate-800 dark:text-slate-200 text-xs">
+              <Layers className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+              <span>子任务清单</span>
+              {subtasks.length > 0 && (
+                <span className="text-[10px] font-normal text-slate-400">
+                  ({acceptedSubtaskCount}/{subtasks.length})
+                </span>
+              )}
+            </div>
+            {!showAddSubtaskInput && (
+              <button
+                onClick={() => setShowAddSubtaskInput(true)}
+                className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5"
+              >
+                <Plus className="w-3 h-3" />
+                <span>添加子任务</span>
+              </button>
+            )}
+          </div>
+
+          {/* Subtasks List */}
+          {subtasks.length > 0 && (
+            <div className="space-y-1.5">
+              {subtasks.map((sub) => {
+                const isSubDone = sub.status === 'ACCEPTED' || Boolean(sub.completed)
+                return (
+                  <div
+                    key={sub.id}
+                    className="flex items-center justify-between gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700/60 group hover:border-slate-300 transition-colors"
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleSubtask(sub.id)}
+                        className={`w-3.5 h-3.5 rounded flex items-center justify-center transition-all shrink-0 cursor-pointer border ${
+                          isSubDone
+                            ? 'bg-emerald-500 border-emerald-600 text-white'
+                            : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 hover:border-emerald-500'
+                        }`}
+                        title={isSubDone ? '恢复为待开始' : '标记子任务完成'}
+                      >
+                        {isSubDone && <Check className="w-2.5 h-2.5 text-white stroke-[3]" />}
+                      </button>
+                      <span
+                        onClick={() => onSelectNode && onSelectNode(sub)}
+                        className={`text-xs truncate cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 flex-1 ${
+                          isSubDone ? 'line-through text-slate-400 dark:text-slate-500' : 'text-slate-800 dark:text-slate-200'
+                        }`}
+                        title="点击检查此子任务"
+                      >
+                        {sub.title}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="text-[10px] px-1.5 py-0.2 rounded font-medium bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
+                        {sub.owner === 'GEMINI' ? 'Gemini' : sub.owner === 'CODEX' ? 'Codex' : '自己'}
+                      </span>
+                      <button
+                        onClick={() => handleDeleteSubtask(sub.id)}
+                        className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-500 p-0.5 rounded transition-opacity"
+                        title="删除此子任务"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Inline Add Subtask Input */}
+          {showAddSubtaskInput && (
+            <div className="flex items-center gap-1.5 pt-1">
+              <input
+                type="text"
+                placeholder="输入子任务名称，回车添加..."
+                value={newSubtaskTitle}
+                onChange={(e) => setNewSubtaskTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSaveNewSubtask()
+                  if (e.key === 'Escape') {
+                    setNewSubtaskTitle('')
+                    setShowAddSubtaskInput(false)
+                  }
+                }}
+                autoFocus
+                className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-blue-500 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 outline-none"
+              />
+              <button
+                onClick={handleSaveNewSubtask}
+                disabled={!newSubtaskTitle.trim()}
+                className="px-2.5 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-medium disabled:opacity-50"
+              >
+                添加
+              </button>
+              <button
+                onClick={() => {
+                  setNewSubtaskTitle('')
+                  setShowAddSubtaskInput(false)
+                }}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg text-xs"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* 6. Execution Rounds & Timeline */}

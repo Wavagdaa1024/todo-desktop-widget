@@ -1,6 +1,7 @@
 import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react'
 import { Project, TaskNode, OwnerType } from '../domain/types'
 import { makeTasklineGraph, TasklineGraph, isNodeCompleted } from '../domain/taskline'
+import { reconcileHierarchy, getNodeCheckState, toggleTask } from '../domain/calculator'
 import {
   RotateCcw,
   ZoomIn,
@@ -10,7 +11,10 @@ import {
   GitMerge,
   ArrowRight,
   X,
-  Check
+  Check,
+  CornerDownRight,
+  Layers,
+  Minus
 } from 'lucide-react'
 
 interface TaskLineCanvasProps {
@@ -50,19 +54,29 @@ export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
     }
   }, [selectedNodeId])
 
-  // Extract all leaf/flattened task nodes
+  // Extract all task nodes with reconciled hierarchy
   const flattenedNodes = useMemo(() => {
     const list: TaskNode[] = []
-    function traverse(nodes: TaskNode[]) {
+    const healedTasks = reconcileHierarchy((project.tasks || []) as TaskNode[])
+
+    function traverse(nodes: TaskNode[], parent?: TaskNode) {
       if (!Array.isArray(nodes)) return
       nodes.forEach((n) => {
-        list.push(n)
+        const item: TaskNode = {
+          ...n,
+          parentId: n.parentId || parent?.id,
+          parents:
+            parent && (!n.parents || n.parents.length === 0)
+              ? [parent.id]
+              : n.parents
+        }
+        list.push(item)
         if (n.children && n.children.length > 0) {
-          traverse(n.children as TaskNode[])
+          traverse(n.children as TaskNode[], n)
         }
       })
     }
-    traverse((project.tasks || []) as TaskNode[])
+    traverse(healedTasks)
     return list
   }, [project.tasks])
 
@@ -108,6 +122,13 @@ export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
     (nodeId: string) => {
       const raw = flattenedNodes.find((n) => n.id === nodeId)
       if (!raw) return
+
+      // If node has children, toggle all children using toggleTask
+      if (raw.children && raw.children.length > 0) {
+        const { updatedTasks } = toggleTask((project.tasks || []) as TaskNode[], raw.id)
+        onUpdateProject({ tasks: updatedTasks })
+        return
+      }
 
       const isCompleted = isNodeCompleted(raw)
       const now = new Date().toISOString()
@@ -436,10 +457,13 @@ export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
                 )
               }
 
-              // Normal Task Card (Clean, 236px width, legible)
+              // Task Card (Clean, 236px width, legible, hierarchy aligned)
               const raw = item.rawNode
               const isSelected = internalSelectedId === item.id
-              const isDone = item.status === 'ACCEPTED'
+              const hasChildren = Boolean(item.hasChildren && raw?.children && raw.children.length > 0)
+              const isSubtask = Boolean(item.isSubtask)
+              const checkState = raw && hasChildren ? getNodeCheckState(raw) : (item.status === 'ACCEPTED' ? 'checked' : 'unchecked')
+              const isDone = checkState === 'checked' || (!hasChildren && item.status === 'ACCEPTED')
               const isRecentDone = Boolean(item.isRecentDone)
 
               return (
@@ -452,6 +476,8 @@ export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
                     }
                   }}
                   className={`absolute z-[2] w-[236px] min-h-[122px] bg-white dark:bg-slate-800 border rounded-2xl p-3.5 shadow-xs hover:shadow-md hover:-translate-y-0.5 transition-all cursor-pointer flex flex-col justify-between gap-2 ${
+                    isSubtask ? 'border-l-[4px] border-l-blue-400 dark:border-l-blue-500' : ''
+                  } ${
                     isRecentDone
                       ? 'border-emerald-300 dark:border-emerald-700 bg-emerald-50/20 dark:bg-emerald-950/20'
                       : isSelected
@@ -471,10 +497,19 @@ export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
                     top: `${pos.y}px`
                   }}
                 >
-                  {/* Card Header: 1-Click Checkbox + Owner + Status + Recent Done Pill */}
+                  {/* Subtask Breadcrumb Indicator */}
+                  {isSubtask && item.parentTitle && (
+                    <div className="flex items-center gap-1 text-[10px] text-blue-600 dark:text-blue-400 font-medium px-1.5 py-0.5 rounded bg-blue-50/80 dark:bg-blue-950/50 border border-blue-200/60 dark:border-blue-900/60 truncate -mb-0.5">
+                      <CornerDownRight className="w-3 h-3 shrink-0 text-blue-500" />
+                      <span className="opacity-75 shrink-0">子任务 · 隶属</span>
+                      <span className="font-semibold truncate max-w-[120px]">「{item.parentTitle}」</span>
+                    </div>
+                  )}
+
+                  {/* Card Header: 1-Click Checkbox + Owner + Status + Recent Done / Parent Pill */}
                   <div className="flex items-center justify-between gap-1.5">
                     <div className="flex items-center gap-2 min-w-0">
-                      {/* Checkbox square from card board ("卡片看板那种方框，放一个在每个图标左上角") */}
+                      {/* Checkbox square */}
                       <button
                         type="button"
                         onClick={(e) => {
@@ -482,13 +517,24 @@ export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
                           handleToggleComplete(item.id)
                         }}
                         className={`w-4 h-4 rounded flex items-center justify-center transition-all shrink-0 cursor-pointer border ${
-                          isDone
+                          checkState === 'checked'
                             ? 'bg-emerald-500 border-emerald-600 text-white shadow-xs'
+                            : checkState === 'indeterminate'
+                            ? 'bg-amber-500 border-amber-600 text-white shadow-xs'
                             : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 hover:border-emerald-500 hover:bg-emerald-50/40 dark:hover:border-emerald-400'
                         }`}
-                        title={isDone ? '点击恢复为未完成' : '点击快捷标记完成'}
+                        title={
+                          hasChildren
+                            ? checkState === 'checked'
+                              ? '点击重新打开所有子任务'
+                              : '点击快捷标记所有子任务完成'
+                            : isDone
+                            ? '点击恢复为未完成'
+                            : '点击快捷标记完成'
+                        }
                       >
-                        {isDone && <Check className="w-3 h-3 text-white stroke-[3]" />}
+                        {checkState === 'checked' && <Check className="w-3 h-3 text-white stroke-[3]" />}
+                        {checkState === 'indeterminate' && <Minus className="w-3 h-3 text-white stroke-[3]" />}
                       </button>
 
                       <div className="flex items-center gap-1.5 min-w-0">
@@ -510,38 +556,47 @@ export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
                     </div>
 
                     <div className="flex items-center gap-1 shrink-0">
-                      {isRecentDone && (
-                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
-                          最近完成✓
+                      {hasChildren ? (
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300 border border-purple-200/60 dark:border-purple-800/60 flex items-center gap-1">
+                          <Layers className="w-3 h-3" />
+                          <span>父任务 · {item.acceptedSubtaskCount}/{item.subtaskCount}</span>
                         </span>
+                      ) : (
+                        <>
+                          {isRecentDone && (
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+                              最近完成✓
+                            </span>
+                          )}
+                          <span
+                            className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                              item.status === 'ACCEPTED'
+                                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+                                : item.status === 'IN_PROGRESS'
+                                ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300'
+                                : item.status === 'WAITING_REVIEW'
+                                ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
+                                : item.status === 'BLOCKED'
+                                ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300'
+                                : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400'
+                            }`}
+                          >
+                            {item.status === 'ACCEPTED'
+                              ? '已完成'
+                              : item.status === 'IN_PROGRESS'
+                              ? '执行中'
+                              : item.status === 'WAITING_REVIEW'
+                              ? '待验收'
+                              : item.status === 'BLOCKED'
+                              ? '阻塞'
+                              : '待开始'}
+                          </span>
+                        </>
                       )}
-                      <span
-                        className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-                          item.status === 'ACCEPTED'
-                            ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
-                            : item.status === 'IN_PROGRESS'
-                            ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300'
-                            : item.status === 'WAITING_REVIEW'
-                            ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
-                            : item.status === 'BLOCKED'
-                            ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300'
-                            : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400'
-                        }`}
-                      >
-                        {item.status === 'ACCEPTED'
-                          ? '已完成'
-                          : item.status === 'IN_PROGRESS'
-                          ? '执行中'
-                          : item.status === 'WAITING_REVIEW'
-                          ? '待验收'
-                          : item.status === 'BLOCKED'
-                          ? '阻塞'
-                          : '待开始'}
-                      </span>
                     </div>
                   </div>
 
-                  {/* Card Title & Desc */}
+                  {/* Card Title & Desc / Subtasks preview */}
                   <div className="space-y-1">
                     <h3
                       className={`text-xs font-bold leading-snug line-clamp-2 transition-colors ${
@@ -552,9 +607,29 @@ export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
                     >
                       {item.title}
                     </h3>
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed">
-                      {item.desc || '暂无说明，点击查看或登记执行进展'}
-                    </p>
+                    {hasChildren && raw?.children && raw.children.length > 0 ? (
+                      <div className="space-y-1 my-1 bg-slate-50/90 dark:bg-slate-900/70 p-1.5 rounded-lg border border-slate-100 dark:border-slate-800/80">
+                        {raw.children.slice(0, 3).map((sub) => {
+                          const isSubDone = isNodeCompleted(sub)
+                          return (
+                            <div key={sub.id} className="flex items-center gap-1.5 text-[10px] text-slate-600 dark:text-slate-300">
+                              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isSubDone ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`} />
+                              <span className={`truncate flex-1 ${isSubDone ? 'line-through opacity-70' : ''}`}>{sub.title}</span>
+                              <span className="text-[9px] text-slate-400 shrink-0 font-medium">
+                                {sub.owner === 'GEMINI' ? 'Gemini' : sub.owner === 'CODEX' ? 'Codex' : '自己'}
+                              </span>
+                            </div>
+                          )
+                        })}
+                        {raw.children.length > 3 && (
+                          <div className="text-[9px] text-slate-400 pl-3">+{raw.children.length - 3} 个更多子任务...</div>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed">
+                        {item.desc || '暂无说明，点击查看或登记执行进展'}
+                      </p>
+                    )}
                   </div>
 
                   {/* Card Footer: Latest event snippet + Quick add triggers */}

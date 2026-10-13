@@ -250,6 +250,8 @@ export function addNodeToParent<T extends TaskItem>(
     dueDate: options?.dueDate,
     acceptanceCriteria: options?.acceptanceCriteria,
     order: 0,
+    parentId: parentId || undefined,
+    parents: parentId ? [parentId] : [],
     children: [],
     rounds: [],
     events: [],
@@ -272,6 +274,8 @@ export function addNodeToParent<T extends TaskItem>(
         if (!item.children) {
           item.children = []
         }
+        newNode.parentId = item.id
+        newNode.parents = [item.id]
         newNode.status = inheritedCompleted ? 'ACCEPTED' : 'TODO'
         newNode.completed = inheritedCompleted
         newNode.order = item.children.length
@@ -726,3 +730,35 @@ export function reconcileCardStatus<T extends TaskItem = TaskItem>(card: Project
     status: nextStatus
   }
 }
+
+/**
+ * Automatically heals and ensures strict parent-child hierarchy across tasks and subtasks:
+ * - Subtasks have parentId set to direct parent.id.
+ * - Subtask DAG parents array is guaranteed to include direct parent.id so it is never positioned before parent.
+ * - Parent status/progress can cascade cleanly.
+ */
+export function reconcileHierarchy<T extends TaskItem>(tasks: T[]): T[] {
+  if (!Array.isArray(tasks)) return tasks
+
+  function heal(list: TaskItem[], parent?: TaskItem): TaskItem[] {
+    return list.map((item) => {
+      const updated: TaskItem = { ...item }
+      if (parent) {
+        updated.parentId = parent.id
+        const currentParents = Array.isArray(updated.parents) ? [...updated.parents] : []
+        if (currentParents.length === 0) {
+          updated.parents = [parent.id]
+        } else if (!currentParents.includes(parent.id)) {
+          updated.parents = [...currentParents, parent.id]
+        }
+      }
+      if (Array.isArray(updated.children) && updated.children.length > 0) {
+        updated.children = heal(updated.children, updated)
+      }
+      return updated
+    })
+  }
+
+  return heal(tasks) as T[]
+}
+

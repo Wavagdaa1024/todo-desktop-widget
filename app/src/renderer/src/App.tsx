@@ -681,6 +681,9 @@ export const App: React.FC = () => {
               handleDeleteTaskNode(activeProject.id, nodeId)
               setDrawerTarget(null)
             }}
+            onSelectNode={(node) => {
+              setDrawerTarget({ projectId: activeProject.id, nodeId: node.id })
+            }}
           />
         )}
       </div>

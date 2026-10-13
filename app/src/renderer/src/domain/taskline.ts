@@ -16,6 +16,12 @@ export interface TasklineVisualNode {
   completedAt?: string
   createdAt?: string
   rawNode?: TaskNode
+  parentId?: string
+  parentTitle?: string
+  isSubtask?: boolean
+  hasChildren?: boolean
+  subtaskCount?: number
+  acceptedSubtaskCount?: number
 }
 
 export interface TasklinePosition {
@@ -185,7 +191,12 @@ export function makeTasklineGraph(
       }
     }
 
-    ;(n.parents || []).forEach((pid) => trace(pid))
+    const explicitParents = new Set<string>(n.parents || [])
+    if (n.parentId) {
+      explicitParents.add(n.parentId)
+    }
+
+    explicitParents.forEach((pid) => trace(pid))
 
     // If node depended directly on hidden history and has no visible parent,
     // connect it cleanly to the history capsule anchor
@@ -196,20 +207,33 @@ export function makeTasklineGraph(
     return [...res]
   }
 
-  const visualItems: TasklineVisualNode[] = visibleNodes.map((n) => ({
-    id: n.id,
-    title: n.title,
-    owner: n.owner || 'SELF',
-    status: n.status || (n.completed ? 'ACCEPTED' : 'TODO'),
-    desc: n.notes || n.acceptanceCriteria,
-    parents: n.parents,
-    renderParents: getRenderParents(n),
-    isArchive: false,
-    isRecentDone: Boolean(latestCompletedNode && n.id === latestCompletedNode.id && totalCompleted >= 2),
-    completedAt: n.completedAt,
-    createdAt: n.createdAt,
-    rawNode: n
-  }))
+  const visualItems: TasklineVisualNode[] = visibleNodes.map((n) => {
+    const parentNode = n.parentId ? nodes.find((x) => x.id === n.parentId) : undefined
+    const children = Array.isArray(n.children) ? n.children : []
+    const hasChildren = children.length > 0
+    const acceptedSubtaskCount = children.filter((c) => isNodeCompleted(c)).length
+
+    return {
+      id: n.id,
+      title: n.title,
+      owner: n.owner || 'SELF',
+      status: n.status || (n.completed ? 'ACCEPTED' : 'TODO'),
+      desc: n.notes || n.acceptanceCriteria,
+      parents: n.parents,
+      renderParents: getRenderParents(n),
+      isArchive: false,
+      isRecentDone: Boolean(latestCompletedNode && n.id === latestCompletedNode.id && totalCompleted >= 2),
+      completedAt: n.completedAt,
+      createdAt: n.createdAt,
+      rawNode: n,
+      parentId: n.parentId,
+      parentTitle: parentNode?.title,
+      isSubtask: Boolean(n.parentId || parentNode),
+      hasChildren,
+      subtaskCount: children.length,
+      acceptedSubtaskCount
+    }
+  })
 
   if (showCapsule) {
     visualItems.unshift({
@@ -239,6 +263,21 @@ export function makeTasklineGraph(
     const pDepths = (n.renderParents || [])
       .filter((pid) => graphMap.has(pid))
       .map((pid) => calcDepth(pid, new Set(seen)))
+
+    // If any parent node has subtasks, downstream non-child nodes follow those subtasks
+    for (const pid of n.renderParents || []) {
+      const pNode = graphMap.get(pid)
+      if (pNode?.hasChildren && pNode.rawNode?.children) {
+        const isChildOfPid = n.parentId === pid || pNode.rawNode.children.some((c) => c.id === id)
+        if (!isChildOfPid) {
+          for (const child of pNode.rawNode.children) {
+            if (child.id !== id && graphMap.has(child.id)) {
+              pDepths.push(calcDepth(child.id, new Set(seen)))
+            }
+          }
+        }
+      }
+    }
 
     let d: number
     if (pDepths.length === 0) {

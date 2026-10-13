@@ -55,6 +55,7 @@ export interface TaskItem {
   rounds?: ExecutionRound[]
   events?: TaskEvent[]
   parents?: string[]
+  parentId?: string
   completedAt?: string
 }
 
@@ -65,6 +66,7 @@ export interface TaskNode extends TaskItem {
   events: TaskEvent[]
   children: TaskNode[]
   parents?: string[]
+  parentId?: string
   completedAt?: string
 }
 
@@ -193,6 +195,7 @@ export const TaskNodeSchema: z.ZodType<TaskNode, z.ZodTypeDef, any> = z.lazy(() 
       rounds: z.array(ExecutionRoundSchema).optional().default([]),
       events: z.array(TaskEventSchema).optional().default([]),
       parents: z.array(z.string()).optional().default([]),
+      parentId: z.string().optional(),
       completedAt: z.string().optional(),
       createdAt: z.string(),
       updatedAt: z.string(),
