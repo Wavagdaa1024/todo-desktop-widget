@@ -45,6 +45,11 @@ export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
   const [nodeOwnerDraft, setNodeOwnerDraft] = useState<OwnerType>('GEMINI')
   const [mergeOtherId, setMergeOtherId] = useState<string>('')
 
+  // In-place double-click title editing on canvas card
+  const [editingCanvasNodeId, setEditingCanvasNodeId] = useState<string | null>(null)
+  const [editingCanvasTitle, setEditingCanvasTitle] = useState('')
+  const isCanvasTitleComposing = useRef(false)
+
   const viewportRef = useRef<HTMLDivElement>(null)
 
   // Keep internal selected id in sync with prop
@@ -171,6 +176,37 @@ export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
       }
     },
     [flattenedNodes, onUpdateTaskNode, onUpdateProject, project.tasks]
+  )
+
+  const handleCommitCanvasTitle = useCallback(
+    (nodeId: string) => {
+      const trimmed = editingCanvasTitle.trim()
+      const target = flattenedNodes.find((n) => n.id === nodeId)
+      if (target && trimmed && trimmed !== target.title) {
+        const now = new Date().toISOString()
+        const updated: TaskNode = {
+          ...target,
+          title: trimmed,
+          updatedAt: now
+        }
+        if (onUpdateTaskNode) {
+          onUpdateTaskNode(updated)
+        } else {
+          function updateTree(list: TaskNode[]): TaskNode[] {
+            return list.map((t) => {
+              if (t.id === nodeId) return updated
+              if (t.children && t.children.length > 0) {
+                return { ...t, children: updateTree(t.children as TaskNode[]) }
+              }
+              return t
+            })
+          }
+          onUpdateProject({ tasks: updateTree((project.tasks || []) as TaskNode[]) })
+        }
+      }
+      setEditingCanvasNodeId(null)
+    },
+    [editingCanvasTitle, flattenedNodes, onUpdateTaskNode, onUpdateProject, project.tasks]
   )
 
   const handleFitView = () => {
@@ -469,6 +505,7 @@ export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
               return (
                 <div
                   key={item.id}
+                  data-node-id={item.id}
                   onClick={() => {
                     setInternalSelectedId(item.id)
                     if (raw && onOpenNodeDrawer) {
@@ -598,15 +635,51 @@ export const TaskLineCanvas: React.FC<TaskLineCanvasProps> = ({
 
                   {/* Card Title & Desc / Subtasks preview */}
                   <div className="space-y-1">
-                    <h3
-                      className={`text-xs font-bold leading-snug line-clamp-2 transition-colors ${
-                        isDone
-                          ? 'line-through text-slate-400 dark:text-slate-500'
-                          : 'text-slate-800 dark:text-slate-100'
-                      }`}
-                    >
-                      {item.title}
-                    </h3>
+                    {editingCanvasNodeId === item.id ? (
+                      <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="text"
+                          value={editingCanvasTitle}
+                          onChange={(e) => setEditingCanvasTitle(e.target.value)}
+                          onCompositionStart={() => {
+                            isCanvasTitleComposing.current = true
+                          }}
+                          onCompositionEnd={() => {
+                            isCanvasTitleComposing.current = false
+                          }}
+                          onKeyDown={(e) => {
+                            if (isCanvasTitleComposing.current || e.nativeEvent.isComposing) return
+                            if (e.key === 'Enter') {
+                              e.stopPropagation()
+                              handleCommitCanvasTitle(item.id)
+                            }
+                            if (e.key === 'Escape') {
+                              e.stopPropagation()
+                              setEditingCanvasNodeId(null)
+                            }
+                          }}
+                          onBlur={() => handleCommitCanvasTitle(item.id)}
+                          autoFocus
+                          className="w-full text-xs font-bold px-1.5 py-0.5 border border-blue-500 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none shadow-xs"
+                        />
+                      </div>
+                    ) : (
+                      <h3
+                        onDoubleClick={(e) => {
+                          e.stopPropagation()
+                          setEditingCanvasNodeId(item.id)
+                          setEditingCanvasTitle(item.title)
+                        }}
+                        className={`text-xs font-bold leading-snug line-clamp-2 transition-colors cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 ${
+                          isDone
+                            ? 'line-through text-slate-400 dark:text-slate-500'
+                            : 'text-slate-800 dark:text-slate-100'
+                        }`}
+                        title="双击直接修改方块名称"
+                      >
+                        {item.title}
+                      </h3>
+                    )}
                     {hasChildren && raw?.children && raw.children.length > 0 ? (
                       <div className="space-y-1 my-1 bg-slate-50/90 dark:bg-slate-900/70 p-1.5 rounded-lg border border-slate-100 dark:border-slate-800/80">
                         {raw.children.slice(0, 3).map((sub) => {

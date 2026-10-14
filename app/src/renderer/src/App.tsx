@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
-import { Card, AppData, DEFAULT_SETTINGS, TaskNode } from './domain/types'
+import { Card, AppData, DEFAULT_SETTINGS, TaskNode, OwnerType } from './domain/types'
 import { Header } from './components/Header'
 import { TaskLineCanvas } from './components/TaskLineCanvas'
 import { TaskNodeDrawer } from './components/TaskNodeDrawer'
@@ -299,6 +299,97 @@ export const App: React.FC = () => {
         lastModified: new Date().toISOString()
       }
     })
+  }
+
+  const handleHandoffTask = (
+    projectId: string,
+    sourceNode: TaskNode,
+    targetAgent: OwnerType,
+    mode: 'handoff' | 'parallel',
+    newTitle: string,
+    prompt: string
+  ) => {
+    const now = new Date().toISOString()
+    const newNodeId = `task_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+
+    const newNode: TaskNode = {
+      id: newNodeId,
+      title: newTitle.trim() || sourceNode.title,
+      status: 'TODO',
+      owner: targetAgent,
+      order: 9999,
+      parents: mode === 'handoff' ? [sourceNode.id] : (sourceNode.parents || []),
+      children: [],
+      rounds: [],
+      events: [
+        {
+          id: `evt_${Date.now()}_0`,
+          roundId: `round_${Date.now()}`,
+          timestamp: now,
+          source: 'SELF',
+          type: 'ASSIGNED',
+          summary:
+            mode === 'handoff'
+              ? `从「${sourceNode.title}」移交派发`
+              : `从「${sourceNode.title}」创建并行任务`
+        }
+      ],
+      notes: prompt,
+      createdAt: now,
+      updatedAt: now,
+      completed: false
+    }
+
+    setData((prev) => {
+      const nextRevision = (prev.revision || 0) + 1
+      currentRevisionRef.current = nextRevision
+
+      const nextCards = prev.cards.map((c) => {
+        if (c.id === projectId) {
+          const currentTasks = (c.tasks || []) as TaskNode[]
+
+          const updatedTasks = currentTasks.map((t) => {
+            if (t.id === sourceNode.id) {
+              const handoffEvt = {
+                id: `evt_${Date.now()}_h`,
+                roundId: t.rounds?.[t.rounds.length - 1]?.id || `round_${Date.now()}`,
+                timestamp: now,
+                source: 'SELF' as const,
+                type: 'ASSIGNED' as const,
+                summary: `交接给 ${targetAgent}：${newTitle}`
+              }
+              return {
+                ...t,
+                events: [...(t.events || []), handoffEvt],
+                updatedAt: now
+              }
+            }
+            return t
+          })
+
+          const allTasks = [...updatedTasks, newNode].map((t, idx) => ({ ...t, order: idx }))
+
+          return {
+            ...c,
+            tasks: allTasks,
+            updatedAt: now
+          }
+        }
+        return c
+      })
+
+      return {
+        ...prev,
+        cards: nextCards,
+        projects: nextCards,
+        revision: nextRevision,
+        lastModified: now
+      }
+    })
+
+    setTimeout(() => {
+      setDrawerTarget({ projectId, nodeId: newNodeId })
+    }, 50)
   }
 
   // Card Operations
@@ -669,7 +760,7 @@ export const App: React.FC = () => {
           ) : null}
         </div>
 
-        {/* Docked 350px Inspector Panel (Non-blocking, zero modal collisions!) */}
+        {/* Docked 360px Inspector Panel (Non-blocking, zero modal collisions!) */}
         {activeProject && activeNode && (
           <TaskNodeDrawer
             project={activeProject}
@@ -683,6 +774,9 @@ export const App: React.FC = () => {
             }}
             onSelectNode={(node) => {
               setDrawerTarget({ projectId: activeProject.id, nodeId: node.id })
+            }}
+            onHandoffTask={(sourceNode, targetAgent, mode, newTitle, prompt) => {
+              handleHandoffTask(activeProject.id, sourceNode, targetAgent, mode, newTitle, prompt)
             }}
           />
         )}
