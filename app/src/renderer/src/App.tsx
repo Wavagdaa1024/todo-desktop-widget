@@ -4,7 +4,22 @@ import { Header } from './components/Header'
 import { TaskLineCanvas } from './components/TaskLineCanvas'
 import { TaskNodeDrawer } from './components/TaskNodeDrawer'
 import { SettingsModal } from './components/SettingsModal'
+import { reconcileHierarchy } from './domain/calculator'
 import { Plus, Undo2, AlertTriangle, CheckCircle2 } from 'lucide-react'
+
+// Helper to guarantee strict hierarchy alignment across all projects on load or update
+function healAppData(appData: AppData): AppData {
+  if (!appData) return appData
+  const healedCards = (appData.cards || []).map((c) => ({
+    ...c,
+    tasks: reconcileHierarchy((c.tasks || []) as TaskNode[])
+  }))
+  return {
+    ...appData,
+    cards: healedCards,
+    projects: healedCards
+  }
+}
 
 export const App: React.FC = () => {
   const [data, setData] = useState<AppData>({
@@ -32,7 +47,7 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (window.electronAPI) {
       window.electronAPI.storage.getInitialData().then((res) => {
-        setData(res.data)
+        setData(healAppData(res.data))
         currentRevisionRef.current = res.data.revision || 0
         if (res.recoveryRequired) {
           setIsRecoveryMode(true)
@@ -189,7 +204,7 @@ export const App: React.FC = () => {
         currentRevisionRef.current = remoteData.revision
       }
       isRemoteUpdate.current = true
-      setData(remoteData)
+      setData(healAppData(remoteData))
     })
     return () => unsubscribe()
   }, [])
@@ -247,7 +262,7 @@ export const App: React.FC = () => {
       currentRevisionRef.current = nextRevision
       const nextCards = prev.cards.map((c) => {
         if (c.id === projectId) {
-          const updatedTasks = replaceNode(c.tasks as TaskNode[])
+          const updatedTasks = reconcileHierarchy(replaceNode(c.tasks as TaskNode[]))
           return {
             ...c,
             tasks: updatedTasks,
@@ -284,7 +299,7 @@ export const App: React.FC = () => {
         if (c.id === projectId) {
           return {
             ...c,
-            tasks: filterNode(c.tasks as TaskNode[]),
+            tasks: reconcileHierarchy(filterNode(c.tasks as TaskNode[])),
             updatedAt: new Date().toISOString()
           }
         }
@@ -367,7 +382,9 @@ export const App: React.FC = () => {
             return t
           })
 
-          const allTasks = [...updatedTasks, newNode].map((t, idx) => ({ ...t, order: idx }))
+          const allTasks = reconcileHierarchy(
+            [...updatedTasks, newNode].map((t, idx) => ({ ...t, order: idx }))
+          )
 
           return {
             ...c,

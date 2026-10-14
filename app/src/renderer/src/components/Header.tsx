@@ -56,6 +56,22 @@ export const Header: React.FC<HeaderProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [showOverviewPopover])
 
+  // Helper to extract all nodes including deeply nested subtasks
+  const getAllProjectTasks = (tasks: TaskNode[]): TaskNode[] => {
+    const list: TaskNode[] = []
+    function walk(nodes: TaskNode[]) {
+      if (!Array.isArray(nodes)) return
+      nodes.forEach((n) => {
+        list.push(n)
+        if (n.children && n.children.length > 0) {
+          walk(n.children as TaskNode[])
+        }
+      })
+    }
+    walk(tasks)
+    return list
+  }
+
   return (
     <header className="sticky top-0 z-30 bg-white/95 dark:bg-slate-900/95 backdrop-blur border-b border-slate-200 dark:border-slate-800 px-4 py-2.5 transition-colors">
       <div className="flex items-center justify-between gap-3">
@@ -78,9 +94,9 @@ export const Header: React.FC<HeaderProps> = ({
         <div className="flex-1 flex items-center gap-1.5 overflow-x-auto mx-3 scrollbar-none py-0.5">
           {cards.map((proj) => {
             const isActive = proj.id === activeProjectId
-            const leafTasks = (proj.tasks || []) as TaskNode[]
-            const waitCount = leafTasks.filter((t) => t.status === 'WAITING_REVIEW').length
-            const runningCount = leafTasks.filter((t) => t.status === 'IN_PROGRESS').length
+            const allTasks = getAllProjectTasks((proj.tasks || []) as TaskNode[])
+            const waitCount = allTasks.filter((t) => t.status === 'WAITING_REVIEW').length
+            const runningCount = allTasks.filter((t) => t.status === 'IN_PROGRESS').length
 
             return (
               <button
@@ -95,7 +111,7 @@ export const Header: React.FC<HeaderProps> = ({
               >
                 <span className="truncate max-w-[150px]">{proj.title}</span>
                 <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-200/80 dark:bg-slate-700 text-slate-500 dark:text-slate-400 font-medium">
-                  {leafTasks.length}
+                  {allTasks.length}
                 </span>
                 {waitCount > 0 && (
                   <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 font-bold">
@@ -161,7 +177,7 @@ export const Header: React.FC<HeaderProps> = ({
                 <div className="space-y-1.5 max-h-64 overflow-y-auto pr-0.5">
                   {cards.map((c) => {
                     const isActive = c.id === activeProjectId
-                    const tasks = (c.tasks || []) as TaskNode[]
+                    const tasks = getAllProjectTasks((c.tasks || []) as TaskNode[])
                     const doneCount = tasks.filter((t) => t.status === 'ACCEPTED').length
                     const waitCount = tasks.filter((t) => t.status === 'WAITING_REVIEW').length
                     const pct = tasks.length > 0 ? Math.round((doneCount / tasks.length) * 100) : 0
